@@ -118,3 +118,4 @@ This project is configured for development with Claude Code. The configuration i
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+# SwiftAI
