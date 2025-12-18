@@ -559,7 +559,6 @@ where Provider.ModelID == ModelIdentifier {
         let currentConfig = config
 
         return AsyncThrowingStream { continuation in
-            // Store task for cancellation support
             let task = Task { [weak self] in
                 guard let self = self else {
                     continuation.finish()
@@ -624,7 +623,7 @@ where Provider.ModelID == ModelIdentifier {
                 }
             }
 
-            // Store task reference for cancellation
+            // Store task reference for cancellation (safely, before continuation callbacks run)
             self.withLock {
                 self.generationTask = task
             }

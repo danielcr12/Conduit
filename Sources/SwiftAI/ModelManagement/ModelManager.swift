@@ -136,10 +136,8 @@ public actor ModelManager {
     ///     print("\(model.identifier.displayName): \(model.size.formatted)")
     /// }
     /// ```
-    public func cachedModels() async -> [CachedModelInfo] {
-        guard let cache = try? await ensureCache() else {
-            return []
-        }
+    public func cachedModels() async throws -> [CachedModelInfo] {
+        let cache = try await ensureCache()
         return await cache.allCachedModels()
     }
 
@@ -740,7 +738,7 @@ extension ModelManager {
     /// Returns the number of cached models.
     public var cachedModelCount: Int {
         get async {
-            await cachedModels().count
+            (try? await cachedModels())?.count ?? 0
         }
     }
 
