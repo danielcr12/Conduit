@@ -138,10 +138,13 @@ public struct ImageGenerationConfig: Sendable, Hashable {
 
     /// Sets the image width.
     ///
-    /// - Parameter value: Width in pixels (should be divisible by 8).
+    /// - Parameter value: Width in pixels (must be divisible by 8 and greater than 0).
     /// - Returns: A new configuration with the updated width.
+    /// - Warning: If the value is not divisible by 8, a runtime warning is printed.
+    ///   Most diffusion models require dimensions divisible by 8.
     public func width(_ value: Int) -> ImageGenerationConfig {
-        ImageGenerationConfig(
+        validateDimension(value, name: "width")
+        return ImageGenerationConfig(
             width: value,
             height: self.height,
             steps: self.steps,
@@ -151,10 +154,13 @@ public struct ImageGenerationConfig: Sendable, Hashable {
 
     /// Sets the image height.
     ///
-    /// - Parameter value: Height in pixels (should be divisible by 8).
+    /// - Parameter value: Height in pixels (must be divisible by 8 and greater than 0).
     /// - Returns: A new configuration with the updated height.
+    /// - Warning: If the value is not divisible by 8, a runtime warning is printed.
+    ///   Most diffusion models require dimensions divisible by 8.
     public func height(_ value: Int) -> ImageGenerationConfig {
-        ImageGenerationConfig(
+        validateDimension(value, name: "height")
+        return ImageGenerationConfig(
             width: self.width,
             height: value,
             steps: self.steps,
@@ -165,11 +171,15 @@ public struct ImageGenerationConfig: Sendable, Hashable {
     /// Sets the image dimensions.
     ///
     /// - Parameters:
-    ///   - width: Width in pixels.
-    ///   - height: Height in pixels.
+    ///   - width: Width in pixels (must be divisible by 8 and greater than 0).
+    ///   - height: Height in pixels (must be divisible by 8 and greater than 0).
     /// - Returns: A new configuration with the updated dimensions.
+    /// - Warning: If values are not divisible by 8, runtime warnings are printed.
+    ///   Most diffusion models require dimensions divisible by 8.
     public func size(width: Int, height: Int) -> ImageGenerationConfig {
-        ImageGenerationConfig(
+        validateDimension(width, name: "width")
+        validateDimension(height, name: "height")
+        return ImageGenerationConfig(
             width: width,
             height: height,
             steps: self.steps,
@@ -181,10 +191,12 @@ public struct ImageGenerationConfig: Sendable, Hashable {
     ///
     /// Higher values produce more detailed images but take longer.
     ///
-    /// - Parameter value: Number of steps (typically 20-50).
+    /// - Parameter value: Number of steps (must be between 1 and 150, typically 20-50).
     /// - Returns: A new configuration with the updated steps.
+    /// - Warning: If the value is outside the recommended range, a runtime warning is printed.
     public func steps(_ value: Int) -> ImageGenerationConfig {
-        ImageGenerationConfig(
+        validateSteps(value)
+        return ImageGenerationConfig(
             width: self.width,
             height: self.height,
             steps: value,
@@ -197,10 +209,12 @@ public struct ImageGenerationConfig: Sendable, Hashable {
     /// Controls how closely the model follows the text prompt.
     /// Higher values make the model follow the prompt more literally.
     ///
-    /// - Parameter value: Guidance scale (typically 5.0-15.0).
+    /// - Parameter value: Guidance scale (must be between 0.0 and 30.0, typically 5.0-15.0).
     /// - Returns: A new configuration with the updated guidance scale.
+    /// - Warning: If the value is outside the recommended range, a runtime warning is printed.
     public func guidanceScale(_ value: Float) -> ImageGenerationConfig {
-        ImageGenerationConfig(
+        validateGuidanceScale(value)
+        return ImageGenerationConfig(
             width: self.width,
             height: self.height,
             steps: self.steps,
@@ -213,5 +227,34 @@ public struct ImageGenerationConfig: Sendable, Hashable {
     /// Whether any parameters are set (non-nil).
     internal var hasParameters: Bool {
         width != nil || height != nil || steps != nil || guidanceScale != nil
+    }
+
+    // MARK: - Validation
+
+    /// Validates image dimension (width/height).
+    private func validateDimension(_ value: Int, name: String) {
+        if value <= 0 {
+            print("⚠️ ImageGenerationConfig: \(name) must be greater than 0 (got \(value))")
+        } else if value % 8 != 0 {
+            print("⚠️ ImageGenerationConfig: \(name) should be divisible by 8 for best compatibility with diffusion models (got \(value))")
+        }
+    }
+
+    /// Validates inference steps.
+    private func validateSteps(_ value: Int) {
+        if value < 1 {
+            print("⚠️ ImageGenerationConfig: steps must be at least 1 (got \(value))")
+        } else if value > 150 {
+            print("⚠️ ImageGenerationConfig: steps above 150 may be excessive and slow (got \(value))")
+        }
+    }
+
+    /// Validates guidance scale.
+    private func validateGuidanceScale(_ value: Float) {
+        if value < 0.0 {
+            print("⚠️ ImageGenerationConfig: guidanceScale must be non-negative (got \(value))")
+        } else if value > 30.0 {
+            print("⚠️ ImageGenerationConfig: guidanceScale above 30.0 may produce poor results (got \(value))")
+        }
     }
 }

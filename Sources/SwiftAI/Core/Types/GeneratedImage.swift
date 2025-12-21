@@ -34,7 +34,7 @@ import AppKit
 /// ```
 public struct GeneratedImage: Sendable {
 
-    /// The raw image data (PNG format).
+    /// The raw image data in the specified format.
     public let data: Data
 
     /// The image format.
@@ -87,9 +87,13 @@ public struct GeneratedImage: Sendable {
     /// Saves the image to a file URL.
     ///
     /// - Parameter url: The destination file URL.
-    /// - Throws: An error if the file cannot be written.
+    /// - Throws: `GeneratedImageError.saveFailed` if the file cannot be written.
     public func save(to url: URL) throws {
-        try data.write(to: url, options: .atomic)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw GeneratedImageError.saveFailed(underlying: error)
+        }
     }
 
     /// Saves the image to a directory with an auto-generated filename.
@@ -98,12 +102,16 @@ public struct GeneratedImage: Sendable {
     ///   - directory: The destination directory URL.
     ///   - filename: Optional filename (without extension). Defaults to a UUID.
     /// - Returns: The URL where the image was saved.
-    /// - Throws: An error if the file cannot be written.
+    /// - Throws: `GeneratedImageError.saveFailed` if the file cannot be written.
     @discardableResult
     public func save(toDirectory directory: URL, filename: String? = nil) throws -> URL {
         let name = filename ?? UUID().uuidString
         let url = directory.appendingPathComponent("\(name).\(format.fileExtension)")
-        try save(to: url)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw GeneratedImageError.saveFailed(underlying: error)
+        }
         return url
     }
 

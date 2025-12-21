@@ -338,4 +338,76 @@ final class ImageGenerationConfigTests: XCTestCase {
             XCTAssertEqual(config.steps, 50)
         }.value
     }
+
+    // MARK: - Validation Tests
+
+    func testValidDimensionDivisibleBy8() {
+        // Valid dimension (divisible by 8) - should not print warning
+        let config = ImageGenerationConfig.default.width(512)
+        XCTAssertEqual(config.width, 512, "Should accept valid width")
+    }
+
+    func testInvalidDimensionNotDivisibleBy8() {
+        // Invalid dimension (not divisible by 8) - prints warning but still sets value
+        let config = ImageGenerationConfig.default.width(500)
+        XCTAssertEqual(config.width, 500, "Should accept dimension not divisible by 8 with warning")
+    }
+
+    func testZeroOrNegativeDimensionValidation() {
+        // Zero and negative dimensions - prints warning but still sets value
+        let config1 = ImageGenerationConfig.default.width(0)
+        let config2 = ImageGenerationConfig.default.height(-10)
+        XCTAssertEqual(config1.width, 0, "Should accept zero width with warning")
+        XCTAssertEqual(config2.height, -10, "Should accept negative height with warning")
+    }
+
+    func testValidStepsRange() {
+        // Valid steps (1-150) - should not print warning
+        let config = ImageGenerationConfig.default.steps(50)
+        XCTAssertEqual(config.steps, 50, "Should accept valid steps")
+    }
+
+    func testStepsBelowMinimum() {
+        // Steps below 1 - prints warning but still sets value
+        let config = ImageGenerationConfig.default.steps(0)
+        XCTAssertEqual(config.steps, 0, "Should accept steps below 1 with warning")
+    }
+
+    func testStepsAboveMaximum() {
+        // Steps above 150 - prints warning but still sets value
+        let config = ImageGenerationConfig.default.steps(200)
+        XCTAssertEqual(config.steps, 200, "Should accept steps above 150 with warning")
+    }
+
+    func testValidGuidanceScale() {
+        // Valid guidance scale (0-30) - should not print warning
+        let config = ImageGenerationConfig.default.guidanceScale(7.5)
+        XCTAssertEqual(config.guidanceScale, 7.5, accuracy: 0.001, "Should accept valid guidance scale")
+    }
+
+    func testNegativeGuidanceScaleValidation() {
+        // Negative guidance scale - prints warning but still sets value
+        let config = ImageGenerationConfig.default.guidanceScale(-5.0)
+        XCTAssertEqual(config.guidanceScale, -5.0, accuracy: 0.001, "Should accept negative guidance scale with warning")
+    }
+
+    func testExcessiveGuidanceScale() {
+        // Guidance scale above 30 - prints warning but still sets value
+        let config = ImageGenerationConfig.default.guidanceScale(50.0)
+        XCTAssertEqual(config.guidanceScale, 50.0, accuracy: 0.001, "Should accept high guidance scale with warning")
+    }
+
+    func testSizeValidation() {
+        // Test size() method validation
+        let config = ImageGenerationConfig.default.size(width: 512, height: 768)
+        XCTAssertEqual(config.width, 512, "Size should set valid width")
+        XCTAssertEqual(config.height, 768, "Size should set valid height")
+    }
+
+    func testSizeValidationWithInvalidValues() {
+        // Size with invalid values - prints warnings but still sets values
+        let config = ImageGenerationConfig.default.size(width: 500, height: 700)
+        XCTAssertEqual(config.width, 500, "Size should set width with warning")
+        XCTAssertEqual(config.height, 700, "Size should set height with warning")
+    }
 }

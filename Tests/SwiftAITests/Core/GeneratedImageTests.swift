@@ -286,7 +286,27 @@ final class GeneratedImageTests: XCTestCase {
         let data = createTestPNGData()
         let image = GeneratedImage(data: data)
 
-        XCTAssertThrowsError(try image.save(to: invalidURL), "Should throw error for invalid path")
+        XCTAssertThrowsError(try image.save(to: invalidURL), "Should throw error for invalid path") { error in
+            // Verify it throws GeneratedImageError.saveFailed
+            guard case GeneratedImageError.saveFailed = error else {
+                XCTFail("Expected GeneratedImageError.saveFailed, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testSaveToDirectoryInvalidPathThrowsSaveFailed() throws {
+        let invalidDir = URL(fileURLWithPath: "/nonexistent/directory")
+        let data = createTestPNGData()
+        let image = GeneratedImage(data: data)
+
+        XCTAssertThrowsError(try image.save(toDirectory: invalidDir, filename: "test"), "Should throw error for invalid directory") { error in
+            // Verify it throws GeneratedImageError.saveFailed
+            guard case GeneratedImageError.saveFailed = error else {
+                XCTFail("Expected GeneratedImageError.saveFailed, got \(error)")
+                return
+            }
+        }
     }
 
     // MARK: - Error Tests
