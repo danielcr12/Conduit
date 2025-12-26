@@ -311,7 +311,7 @@ struct AnthropicRequestBuildingTests {
 struct AnthropicResponseParsingTests {
 
     @Test("Parse successful response")
-    func successfulResponse() async {
+    func successfulResponse() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
         let response = AnthropicMessagesResponse(
             id: "msg_123",
@@ -325,7 +325,7 @@ struct AnthropicResponseParsingTests {
             usage: .init(inputTokens: 10, outputTokens: 5)
         )
 
-        let result = await provider.convertToGenerationResult(response, startTime: Date())
+        let result = try await provider.convertToGenerationResult(response, startTime: Date())
 
         #expect(result.text == "Hello, world!")
         #expect(result.tokenCount == 5)
@@ -335,7 +335,7 @@ struct AnthropicResponseParsingTests {
     }
 
     @Test("Extract text from content blocks")
-    func textExtraction() async {
+    func textExtraction() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
         let response = AnthropicMessagesResponse(
             id: "msg_123",
@@ -350,12 +350,12 @@ struct AnthropicResponseParsingTests {
             usage: .init(inputTokens: 10, outputTokens: 5)
         )
 
-        let result = await provider.convertToGenerationResult(response, startTime: Date())
+        let result = try await provider.convertToGenerationResult(response, startTime: Date())
         #expect(result.text == "Part 1 Part 2")
     }
 
     @Test("Filter thinking blocks from response")
-    func thinkingBlocks() async {
+    func thinkingBlocks() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
         let response = AnthropicMessagesResponse(
             id: "msg_123",
@@ -370,12 +370,12 @@ struct AnthropicResponseParsingTests {
             usage: .init(inputTokens: 10, outputTokens: 15)
         )
 
-        let result = await provider.convertToGenerationResult(response, startTime: Date())
+        let result = try await provider.convertToGenerationResult(response, startTime: Date())
         #expect(result.text == "User response") // Thinking filtered out
     }
 
     @Test("Map stop_reason to FinishReason")
-    func stopReasonMapping() async {
+    func stopReasonMapping() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
 
         // Test end_turn
@@ -385,7 +385,7 @@ struct AnthropicResponseParsingTests {
             model: "test", stopReason: "end_turn",
             usage: .init(inputTokens: 1, outputTokens: 1)
         )
-        let result1 = await provider.convertToGenerationResult(endTurn, startTime: Date())
+        let result1 = try await provider.convertToGenerationResult(endTurn, startTime: Date())
         #expect(result1.finishReason == .stop)
 
         // Test max_tokens
@@ -395,7 +395,7 @@ struct AnthropicResponseParsingTests {
             model: "test", stopReason: "max_tokens",
             usage: .init(inputTokens: 1, outputTokens: 1)
         )
-        let result2 = await provider.convertToGenerationResult(maxTokens, startTime: Date())
+        let result2 = try await provider.convertToGenerationResult(maxTokens, startTime: Date())
         #expect(result2.finishReason == .maxTokens)
     }
 }
@@ -458,7 +458,7 @@ struct AnthropicStreamingEventTests {
     }
 
     @Test("processStreamEvent only yields chunks for delta events")
-    func skipNonDeltaEvents() async {
+    func skipNonDeltaEvents() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
         var tokenCount = 0
 
@@ -468,11 +468,11 @@ struct AnthropicStreamingEventTests {
                           content: [], model: "test",
                           stopReason: nil, stopSequence: nil)
         )
-        let chunk1 = await provider.processStreamEvent(.messageStart(messageStart), startTime: Date(), totalTokens: &tokenCount)
+        let chunk1 = try await provider.processStreamEvent(.messageStart(messageStart), startTime: Date(), totalTokens: &tokenCount)
         #expect(chunk1 == nil)
 
         // content_block_stop should not yield
-        let chunk2 = await provider.processStreamEvent(.contentBlockStop, startTime: Date(), totalTokens: &tokenCount)
+        let chunk2 = try await provider.processStreamEvent(.contentBlockStop, startTime: Date(), totalTokens: &tokenCount)
         #expect(chunk2 == nil)
 
         // content_block_delta should yield
@@ -480,7 +480,7 @@ struct AnthropicStreamingEventTests {
             index: 0,
             delta: .init(type: "text_delta", text: "Hi")
         )
-        let chunk3 = await provider.processStreamEvent(.contentBlockDelta(delta), startTime: Date(), totalTokens: &tokenCount)
+        let chunk3 = try await provider.processStreamEvent(.contentBlockDelta(delta), startTime: Date(), totalTokens: &tokenCount)
         #expect(chunk3 != nil)
         #expect(chunk3?.text == "Hi")
     }

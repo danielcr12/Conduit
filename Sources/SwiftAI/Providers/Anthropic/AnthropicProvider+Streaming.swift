@@ -276,7 +276,7 @@ extension AnthropicProvider {
         let request = buildRequestBody(messages: messages, model: model, config: config, stream: true)
 
         // Build URLRequest
-        let url = configuration.baseURL.appendingPathComponent("/v1/messages")
+        let url = configuration.baseURL.appending(path: "v1/messages")
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
 
@@ -308,10 +308,22 @@ extension AnthropicProvider {
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            // For streaming errors, we don't have the full body yet
+            // Issue 12.9: Collect and decode error body for better diagnostics
+            var errorData = Data()
+            for try await byte in bytes {
+                errorData.append(byte)
+                if errorData.count > 10_000 { break } // Limit collection
+            }
+
+            // Try to decode structured error response
+            if let errorResponse = try? decoder.decode(AnthropicErrorResponse.self, from: errorData) {
+                throw mapAnthropicError(errorResponse, statusCode: httpResponse.statusCode)
+            }
+
+            // Fallback with raw error text
             throw AIError.serverError(
                 statusCode: httpResponse.statusCode,
-                message: "HTTP \(httpResponse.statusCode)"
+                message: String(data: errorData, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             )
         }
 
@@ -332,11 +344,22 @@ extension AnthropicProvider {
 
                 guard let eventData = jsonString.data(using: .utf8) else { continue }
 
-                // Parse event (skip if parsing fails)
-                if let event = try? parseStreamEvent(from: eventData) {
-                    if let chunk = processStreamEvent(event, startTime: startTime, totalTokens: &totalTokens) {
-                        continuation.yield(chunk)
+                // Issue 12.11: Parse event with error logging for diagnostics
+                do {
+                    if let event = try parseStreamEvent(from: eventData) {
+                        if let chunk = try processStreamEvent(event, startTime: startTime, totalTokens: &totalTokens) {
+                            continuation.yield(chunk)
+                        }
                     }
+                } catch let error as AIError {
+                    // Stream error events throw AIError - propagate to consumer
+                    throw error
+                } catch {
+                    // Issue 12.11: Log parsing errors for diagnostics
+                    #if DEBUG
+                    print("[AnthropicProvider] Failed to parse stream event: \(error)")
+                    #endif
+                    // Continue processing - don't fail the stream for single event parse errors
                 }
             }
         }
@@ -410,15 +433,27 @@ extension AnthropicProvider {
         case "message_stop":
             return .messageStop
 
+        case "message_delta":
+            let event = try decoder.decode(AnthropicStreamEvent.MessageDelta.self, from: data)
+            return .messageDelta(event)
+
+        case "error":
+            let event = try decoder.decode(AnthropicStreamEvent.StreamError.self, from: data)
+            return .error(event)
+
+        case "ping":
+            return .ping
+
         default:
             // Unknown event type - skip (future-proof)
             return nil
         }
     }
 
-    /// Processes stream event and yields GenerationChunk if text delta.
+    /// Processes stream event and yields GenerationChunk if applicable.
     ///
-    /// **CRITICAL**: Only content_block_delta events contain text - all others are metadata.
+    /// **CRITICAL**: Only `content_block_delta` and `message_delta` events
+    /// produce chunks - all others are metadata.
     ///
     /// ## Event Processing
     ///
@@ -426,7 +461,10 @@ extension AnthropicProvider {
     /// - `contentBlockStart`: Metadata only, returns `nil`
     /// - `contentBlockDelta`: **Contains text**, returns `GenerationChunk`
     /// - `contentBlockStop`: Metadata only, returns `nil`
+    /// - `messageDelta`: **Contains usage stats**, returns final `GenerationChunk`
     /// - `messageStop`: Metadata only, returns `nil`
+    /// - `error`: **Throws AIError** to propagate to stream consumer
+    /// - `ping`: Keep-alive heartbeat, returns `nil`
     ///
     /// ## Performance Metrics
     ///
@@ -437,7 +475,7 @@ extension AnthropicProvider {
     ///
     /// ## Usage
     /// ```swift
-    /// if let chunk = processStreamEvent(event, startTime: startTime, totalTokens: &totalTokens) {
+    /// if let chunk = try processStreamEvent(event, startTime: startTime, totalTokens: &totalTokens) {
     ///     continuation.yield(chunk)
     /// }
     /// ```
@@ -448,14 +486,19 @@ extension AnthropicProvider {
     ///   - totalTokens: Running total of tokens (incremented for text deltas).
     ///
     /// - Returns: A `GenerationChunk` if this event contains text, `nil` otherwise.
+    ///
+    /// - Throws: `AIError.serverError` if an error event is received.
     internal func processStreamEvent(
         _ event: AnthropicStreamEvent,
         startTime: Date,
         totalTokens: inout Int
-    ) -> GenerationChunk? {
+    ) throws -> GenerationChunk? {
         switch event {
         case .contentBlockDelta(let delta):
             // This is the only event that yields actual text
+            // NOTE: Token count is approximate during streaming. Each content_block_delta
+            // is counted as 1 token, but may contain multiple tokens. Accurate counts
+            // are available in the final message_delta event via UsageStats.
             totalTokens += 1
             let duration = Date().timeIntervalSince(startTime)
             let tokensPerSecond = duration > 0 ? Double(totalTokens) / duration : 0
@@ -472,9 +515,78 @@ extension AnthropicProvider {
                 timestamp: Date()
             )
 
+        case .messageDelta(let delta):
+            // Final event with usage statistics and stop reason
+            return GenerationChunk(
+                text: "",
+                tokenCount: 0,
+                tokenId: nil,
+                logprob: nil,
+                topLogprobs: nil,
+                tokensPerSecond: nil,
+                isComplete: true,
+                finishReason: mapStreamStopReason(delta.delta.stopReason),
+                timestamp: Date(),
+                usage: UsageStats(
+                    promptTokens: delta.usage.inputTokens,
+                    completionTokens: delta.usage.outputTokens
+                )
+            )
+
+        case .error(let streamError):
+            // Throw as AIError to propagate to stream consumer
+            throw AIError.serverError(
+                statusCode: 0,
+                message: "[\(streamError.error.type)] \(streamError.error.message)"
+            )
+
+        case .ping:
+            // Keep-alive heartbeat - ignore
+            return nil
+
         default:
             // message_start, content_block_start, content_block_stop, message_stop are metadata only
             return nil
+        }
+    }
+
+    // MARK: - Private Helpers
+
+    /// Maps Anthropic's stop reason string to a FinishReason enum.
+    ///
+    /// ## Mapping
+    ///
+    /// | Anthropic String | FinishReason |
+    /// |-----------------|--------------|
+    /// | `"end_turn"` | `.stop` |
+    /// | `"max_tokens"` | `.maxTokens` |
+    /// | `"stop_sequence"` | `.stopSequence` |
+    /// | `"tool_use"` | `.toolCall` |
+    /// | `"pause_turn"` | `.pauseTurn` |
+    /// | `"refusal"` | `.contentFilter` |
+    /// | `nil` or unknown | `.stop` |
+    ///
+    /// - Parameter reason: The Anthropic stop_reason string from the API response.
+    ///
+    /// - Returns: The corresponding `FinishReason` enum case.
+    private func mapStreamStopReason(_ reason: String?) -> FinishReason {
+        switch reason {
+        case "end_turn":
+            return .stop
+        case "max_tokens":
+            return .maxTokens
+        case "stop_sequence":
+            return .stopSequence
+        case "tool_use":
+            return .toolCall
+        case "pause_turn":
+            return .pauseTurn
+        case "refusal":
+            return .contentFilter
+        case "model_context_window_exceeded":
+            return .modelContextWindowExceeded
+        default:
+            return .stop
         }
     }
 }

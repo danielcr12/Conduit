@@ -441,11 +441,11 @@ public actor AnthropicProvider: AIProvider, TextGenerator {
             stream: false
         )
 
-        // Execute HTTP request
-        let response = try await executeRequest(request)
+        // Execute HTTP request with retry logic
+        let (response, rateLimitInfo) = try await executeRequest(request)
 
-        // Convert to GenerationResult
-        return convertToGenerationResult(response, startTime: startTime)
+        // Convert to GenerationResult with rate limit info
+        return try convertToGenerationResult(response, startTime: startTime, rateLimitInfo: rateLimitInfo)
     }
 
     // NOTE: Streaming methods are implemented in AnthropicProvider+Streaming.swift

@@ -81,6 +81,23 @@ internal struct AnthropicMessagesRequest: Codable, Sendable {
     /// Optional. When `nil`, thinking is disabled (default behavior).
     let thinking: ThinkingRequest?
 
+    /// Sequences that will cause the model to stop generating.
+    ///
+    /// Optional. When any of these sequences is encountered, generation stops.
+    let stopSequences: [String]?
+
+    /// Request metadata for tracking and analytics.
+    ///
+    /// Optional. Contains user ID for per-user usage tracking.
+    let metadata: Metadata?
+
+    /// Service tier for capacity management.
+    ///
+    /// Optional. Controls routing priority for the request.
+    /// - `"auto"`: Automatic tier selection (default)
+    /// - `"standard_only"`: Standard capacity only, no priority routing
+    let serviceTier: String?
+
     // MARK: - Coding Keys
 
     /// Maps Swift property names to API's snake_case fields.
@@ -94,6 +111,9 @@ internal struct AnthropicMessagesRequest: Codable, Sendable {
         case topK = "top_k"
         case stream
         case thinking
+        case stopSequences = "stop_sequences"
+        case metadata
+        case serviceTier = "service_tier"
     }
 
     // MARK: - ThinkingRequest
@@ -133,6 +153,41 @@ internal struct AnthropicMessagesRequest: Codable, Sendable {
         /// Controls how many tokens the model can use for internal
         /// reasoning before generating the response.
         let budget_tokens: Int
+    }
+
+    // MARK: - Metadata
+
+    /// Request metadata for tracking and analytics.
+    ///
+    /// Contains user identification for per-user usage tracking and analytics
+    /// in the Anthropic dashboard.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let metadata = Metadata(userId: "user_12345")
+    /// ```
+    ///
+    /// ## API Format
+    /// ```json
+    /// {
+    ///   "metadata": {
+    ///     "user_id": "user_12345"
+    ///   }
+    /// }
+    /// ```
+    struct Metadata: Codable, Sendable {
+
+        /// User ID for tracking usage per user.
+        ///
+        /// This allows you to track usage and costs by user in
+        /// the Anthropic console and API responses.
+        let userId: String
+
+        // MARK: - Coding Keys
+
+        enum CodingKeys: String, CodingKey {
+            case userId = "user_id"
+        }
     }
 
     // MARK: - MessageContent
@@ -497,6 +552,22 @@ internal enum AnthropicStreamEvent: Sendable {
     /// Emitted last, indicates the message is complete.
     case messageStop
 
+    /// Message delta event.
+    ///
+    /// Emitted near the end of streaming with final usage statistics
+    /// and the stop reason.
+    case messageDelta(MessageDelta)
+
+    /// Streaming error event.
+    ///
+    /// Emitted when an error occurs during streaming.
+    case error(StreamError)
+
+    /// Ping keep-alive event.
+    ///
+    /// Heartbeat event sent periodically to keep the connection alive.
+    case ping
+
     // MARK: - MessageStart
 
     /// Data for `message_start` event.
@@ -597,6 +668,115 @@ internal enum AnthropicStreamEvent: Sendable {
 
             /// The text chunk to append.
             let text: String
+        }
+    }
+
+    // MARK: - MessageDelta
+
+    /// Message delta event containing final usage statistics.
+    ///
+    /// Sent at the end of a streaming response with the stop reason
+    /// and token usage counts.
+    ///
+    /// ## JSON Structure
+    /// ```json
+    /// {
+    ///   "type": "message_delta",
+    ///   "delta": {
+    ///     "stop_reason": "end_turn",
+    ///     "stop_sequence": null
+    ///   },
+    ///   "usage": {
+    ///     "input_tokens": 25,
+    ///     "output_tokens": 150
+    ///   }
+    /// }
+    /// ```
+    struct MessageDelta: Codable, Sendable {
+
+        /// The delta containing stop information.
+        let delta: Delta
+
+        /// Token usage statistics.
+        let usage: Usage
+
+        /// Delta containing stop reason information.
+        struct Delta: Codable, Sendable {
+
+            /// The reason generation stopped.
+            ///
+            /// Possible values:
+            /// - `"end_turn"`: Natural completion
+            /// - `"max_tokens"`: Token limit reached
+            /// - `"stop_sequence"`: Stop sequence encountered
+            /// - `"tool_use"`: Tool call requested
+            let stopReason: String?
+
+            /// The stop sequence that triggered termination.
+            ///
+            /// Only populated if `stopReason` is `"stop_sequence"`.
+            let stopSequence: String?
+
+            // MARK: - Coding Keys
+
+            enum CodingKeys: String, CodingKey {
+                case stopReason = "stop_reason"
+                case stopSequence = "stop_sequence"
+            }
+        }
+
+        /// Token usage statistics from the streaming response.
+        struct Usage: Codable, Sendable {
+
+            /// Number of tokens in the input prompt.
+            let inputTokens: Int
+
+            /// Number of tokens in the generated output.
+            let outputTokens: Int
+
+            // MARK: - Coding Keys
+
+            enum CodingKeys: String, CodingKey {
+                case inputTokens = "input_tokens"
+                case outputTokens = "output_tokens"
+            }
+        }
+    }
+
+    // MARK: - StreamError
+
+    /// Error event during streaming.
+    ///
+    /// Contains error details when an error occurs during a streaming response.
+    ///
+    /// ## JSON Structure
+    /// ```json
+    /// {
+    ///   "type": "error",
+    ///   "error": {
+    ///     "type": "overloaded_error",
+    ///     "message": "Overloaded"
+    ///   }
+    /// }
+    /// ```
+    struct StreamError: Codable, Sendable {
+
+        /// The error details.
+        let error: ErrorDetail
+
+        /// Detailed information about the streaming error.
+        struct ErrorDetail: Codable, Sendable {
+
+            /// The error type.
+            ///
+            /// Common values:
+            /// - `"overloaded_error"`: Server overloaded
+            /// - `"api_error"`: Internal API error
+            /// - `"rate_limit_error"`: Rate limit exceeded
+            let type: String
+
+            /// Human-readable error message.
+            let message: String
         }
     }
 }

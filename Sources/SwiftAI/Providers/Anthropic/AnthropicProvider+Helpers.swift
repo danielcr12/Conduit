@@ -135,6 +135,11 @@ extension AnthropicProvider {
             )
         }
 
+        // Build metadata if userId is provided
+        let metadata: AnthropicMessagesRequest.Metadata? = config.userId.map {
+            AnthropicMessagesRequest.Metadata(userId: $0)
+        }
+
         return AnthropicMessagesRequest(
             model: model.rawValue,
             messages: apiMessages,
@@ -144,7 +149,10 @@ extension AnthropicProvider {
             topP: (config.topP > 0 && config.topP <= 1) ? Double(config.topP) : nil,
             topK: config.topK,
             stream: stream ? true : nil,
-            thinking: thinkingRequest
+            thinking: thinkingRequest,
+            stopSequences: config.stopSequences.isEmpty ? nil : config.stopSequences,
+            metadata: metadata,
+            serviceTier: config.serviceTier?.rawValue
         )
     }
 }
@@ -153,11 +161,11 @@ extension AnthropicProvider {
 
 extension AnthropicProvider {
 
-    /// Executes HTTP request to Anthropic Messages API.
+    /// Executes HTTP request to Anthropic Messages API with retry logic.
     ///
     /// This method handles the full HTTP request lifecycle: building the URL request,
-    /// setting headers, encoding the body, executing the request, and validating
-    /// the response.
+    /// setting headers, encoding the body, executing the request with automatic retries,
+    /// and validating the response.
     ///
     /// ## Request Flow
     ///
@@ -165,90 +173,168 @@ extension AnthropicProvider {
     /// 2. **Headers**: Adds authentication, API version, and content type via
     ///    `configuration.buildHeaders()`
     /// 3. **Body Encoding**: JSON-encodes the request body
-    /// 4. **Execution**: Performs async HTTP request
+    /// 4. **Execution**: Performs async HTTP request with retry logic
     /// 5. **Validation**: Checks HTTP status code
     /// 6. **Error Handling**: Decodes error responses and maps to AIError
-    /// 7. **Success**: Decodes and returns the response
+    /// 7. **Success**: Decodes and returns the response with rate limit info
+    ///
+    /// ## Retry Logic
+    ///
+    /// The method implements exponential backoff retry for transient errors:
+    /// - **Network errors (URLError)**: Retried with exponential backoff
+    /// - **429 Rate limit**: Retried after Retry-After header duration (or backoff)
+    /// - **500+ Server errors**: Retried with exponential backoff
+    /// - **400-499 Client errors (except 429)**: Fail immediately, no retry
+    ///
+    /// Backoff formula: `2^attempt` seconds (1s, 2s, 4s, 8s...)
+    /// Maximum attempts: `configuration.maxRetries + 1` (initial + retries)
     ///
     /// ## HTTP Status Codes
     ///
     /// - **200-299**: Success - response decoded and returned
-    /// - **401**: Authentication error - mapped to `.authenticationFailed`
-    /// - **429**: Rate limit - mapped to `.rateLimited`
-    /// - **500-599**: Server error - mapped to `.serverError`
-    /// - **Other**: Attempts to decode error response, falls back to generic error
+    /// - **401**: Authentication error - mapped to `.authenticationFailed` (no retry)
+    /// - **429**: Rate limit - mapped to `.rateLimited` (retried)
+    /// - **500-599**: Server error - mapped to `.serverError` (retried)
+    /// - **Other 4xx**: Client error (no retry)
     ///
     /// ## Usage
     /// ```swift
     /// let request = buildRequestBody(messages: messages, model: .claudeSonnet45, config: .default)
-    /// let response = try await executeRequest(request)
+    /// let (response, rateLimitInfo) = try await executeRequest(request)
     /// print(response.content.first?.text ?? "")
+    /// print("Remaining requests: \(rateLimitInfo?.remainingRequests ?? 0)")
     /// ```
     ///
     /// - Parameter request: The Anthropic API request to execute.
     ///
-    /// - Returns: The decoded `AnthropicMessagesResponse` containing the generated
-    ///   message, usage statistics, and stop reason.
+    /// - Returns: A tuple containing the decoded `AnthropicMessagesResponse` and
+    ///   optional `RateLimitInfo` extracted from response headers.
     ///
     /// - Throws: `AIError` variants:
     ///   - `.networkError`: Network connectivity issues (URLError)
     ///   - `.authenticationFailed`: Invalid or missing API key (HTTP 401)
-    ///   - `.rateLimited`: Rate limit exceeded (HTTP 429)
-    ///   - `.serverError`: Anthropic API error (HTTP 4xx/5xx)
-    ///   - `.generationFailed`: Encoding/decoding failures
+    ///   - `.rateLimited`: Rate limit exceeded after all retries (HTTP 429)
+    ///   - `.serverError`: Anthropic API error after all retries (HTTP 4xx/5xx)
+    ///   - `.generationFailed`: Encoding/decoding failures or all retries exhausted
     internal func executeRequest(
         _ request: AnthropicMessagesRequest
-    ) async throws -> AnthropicMessagesResponse {
-        let url = configuration.baseURL.appendingPathComponent("/v1/messages")
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = "POST"
-
-        // Add headers (authentication, API version, content-type)
-        for (name, value) in configuration.buildHeaders() {
-            urlRequest.setValue(value, forHTTPHeaderField: name)
-        }
-
-        // Encode request body
+    ) async throws -> (AnthropicMessagesResponse, RateLimitInfo?) {
+        // Encode request body once (reused across retries)
+        let requestBody: Data
         do {
-            urlRequest.httpBody = try encoder.encode(request)
+            requestBody = try encoder.encode(request)
         } catch {
             throw AIError.generationFailed(underlying: SendableError(error))
         }
 
-        // Execute request
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await session.data(for: urlRequest)
-        } catch let urlError as URLError {
-            throw AIError.networkError(urlError)
-        } catch {
-            throw AIError.networkError(URLError(.unknown))
-        }
+        var lastError: Error?
 
-        // Validate HTTP response
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw AIError.networkError(URLError(.badServerResponse))
-        }
+        for attempt in 0...configuration.maxRetries {
+            do {
+                // Build URLRequest for each attempt
+                let url = configuration.baseURL.appending(path: "v1/messages")
+                var urlRequest = URLRequest(url: url)
+                urlRequest.httpMethod = "POST"
 
-        // Check status code
-        guard (200...299).contains(httpResponse.statusCode) else {
-            // Try to decode error response
-            if let errorResponse = try? decoder.decode(AnthropicErrorResponse.self, from: data) {
-                throw mapAnthropicError(errorResponse, statusCode: httpResponse.statusCode)
+                // Add headers (authentication, API version, content-type)
+                for (name, value) in configuration.buildHeaders() {
+                    urlRequest.setValue(value, forHTTPHeaderField: name)
+                }
+
+                urlRequest.httpBody = requestBody
+
+                // Execute request
+                let (data, response) = try await session.data(for: urlRequest)
+
+                // Validate HTTP response
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw AIError.networkError(URLError(.badServerResponse))
+                }
+
+                // Extract rate limit info from headers
+                let headers = httpResponse.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+                    if let key = pair.key as? String, let value = pair.value as? String {
+                        result[key] = value
+                    }
+                }
+                let rateLimitInfo = RateLimitInfo(headers: headers)
+
+                // Success case
+                if (200...299).contains(httpResponse.statusCode) {
+                    let decoded = try decoder.decode(AnthropicMessagesResponse.self, from: data)
+                    return (decoded, rateLimitInfo)
+                }
+
+                // Determine if this error is retryable
+                let statusCode = httpResponse.statusCode
+                let isRetryable = statusCode == 429 || statusCode >= 500
+
+                if isRetryable && attempt < configuration.maxRetries {
+                    // Calculate wait time
+                    let waitTime: TimeInterval
+                    if statusCode == 429, let retryAfter = rateLimitInfo.retryAfter {
+                        // Use Retry-After header for rate limits
+                        waitTime = retryAfter
+                    } else {
+                        // Exponential backoff: 1s, 2s, 4s, 8s...
+                        waitTime = pow(2.0, Double(attempt))
+                    }
+
+                    try await Task.sleep(for: .seconds(waitTime))
+                    continue
+                }
+
+                // Non-retryable error or retries exhausted - throw appropriate error
+                if let errorResponse = try? decoder.decode(AnthropicErrorResponse.self, from: data) {
+                    throw mapAnthropicError(errorResponse, statusCode: statusCode)
+                }
+
+                throw AIError.serverError(
+                    statusCode: statusCode,
+                    message: String(data: data, encoding: .utf8) ?? "Unknown error"
+                )
+
+            } catch let urlError as URLError {
+                // Network errors are retryable
+                lastError = AIError.networkError(urlError)
+
+                if attempt < configuration.maxRetries {
+                    let waitTime = pow(2.0, Double(attempt))
+                    try await Task.sleep(for: .seconds(waitTime))
+                    continue
+                }
+
+                throw AIError.networkError(urlError)
+
+            } catch let aiError as AIError {
+                // Check if this AIError is retryable
+                if aiError.isRetryable && attempt < configuration.maxRetries {
+                    lastError = aiError
+                    let waitTime = pow(2.0, Double(attempt))
+                    try await Task.sleep(for: .seconds(waitTime))
+                    continue
+                }
+
+                throw aiError
+
+            } catch {
+                // Unknown errors - rethrow immediately
+                throw error
             }
-            // Fallback to generic error if we can't decode the error response
-            throw AIError.serverError(
-                statusCode: httpResponse.statusCode,
-                message: String(data: data, encoding: .utf8) ?? "Unknown error"
-            )
         }
 
-        // Decode success response
-        do {
-            return try decoder.decode(AnthropicMessagesResponse.self, from: data)
-        } catch {
-            throw AIError.generationFailed(underlying: SendableError(error))
+        // All retries exhausted - throw last error or generic failure
+        if let lastError = lastError {
+            throw lastError
         }
+
+        throw AIError.generationFailed(
+            underlying: SendableError(
+                NSError(domain: "AnthropicProvider", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "All retry attempts exhausted"
+                ])
+            )
+        )
     }
 }
 
@@ -275,6 +361,10 @@ extension AnthropicProvider {
     ///   → `.invalidInput`
     /// - `rate_limit_error`: Too many requests
     ///   → `.rateLimited(retryAfter: nil)`
+    /// - `billing_error`: Payment required (HTTP 402)
+    ///   → `.billingError`
+    /// - `request_too_large`: Request exceeds 32MB limit (HTTP 413)
+    ///   → `.invalidInput`
     /// - `timeout_error`: Request took too long
     ///   → `.timeout`
     /// - `api_error`: Internal Anthropic server error
@@ -323,6 +413,12 @@ extension AnthropicProvider {
         case "rate_limit_error":
             // TODO: Extract retry-after from headers if available (future enhancement)
             return .rateLimited(retryAfter: nil)
+
+        case "billing_error":
+            return .billingError(error.error.message)
+
+        case "request_too_large":
+            return .invalidInput("Request exceeds 32MB size limit. \(error.error.message)")
 
         case "timeout_error":
             return .timeout(configuration.timeout)
@@ -383,6 +479,11 @@ extension AnthropicProvider {
     /// - `usage.inputTokens` → `promptTokens`
     /// - `usage.outputTokens` → `completionTokens`
     ///
+    /// ## Rate Limit Information
+    ///
+    /// When provided, the `rateLimitInfo` parameter is included in the result,
+    /// allowing callers to monitor API usage and implement request pacing.
+    ///
     /// ## Finish Reason Mapping
     ///
     /// Delegates to `mapStopReason()` to convert Anthropic's `stop_reason`
@@ -391,24 +492,27 @@ extension AnthropicProvider {
     /// ## Usage
     /// ```swift
     /// let startTime = Date()
-    /// let response = try await executeRequest(request)
-    /// let result = convertToGenerationResult(response, startTime: startTime)
+    /// let (response, rateLimitInfo) = try await executeRequest(request)
+    /// let result = convertToGenerationResult(response, startTime: startTime, rateLimitInfo: rateLimitInfo)
     /// print(result.text)
     /// print("Speed: \(result.tokensPerSecond) tok/s")
+    /// print("Remaining requests: \(result.rateLimitInfo?.remainingRequests ?? 0)")
     /// ```
     ///
     /// - Parameters:
     ///   - response: The Anthropic API response to convert.
     ///   - startTime: The timestamp when generation started (for performance metrics).
+    ///   - rateLimitInfo: Optional rate limit information extracted from HTTP response headers.
     ///
-    /// - Returns: A `GenerationResult` containing the generated text and metadata.
+    /// - Returns: A `GenerationResult` containing the generated text, metadata, and rate limit info.
     ///
     /// - Note: The `logprobs` field is always `nil` because Anthropic's API does
     ///   not provide log probabilities for generated tokens.
     internal func convertToGenerationResult(
         _ response: AnthropicMessagesResponse,
-        startTime: Date
-    ) -> GenerationResult {
+        startTime: Date,
+        rateLimitInfo: RateLimitInfo? = nil
+    ) throws -> GenerationResult {
         // Extract text blocks for the final response
         // Note: Thinking blocks (type="thinking") contain internal reasoning
         // and are filtered out, as they are not part of the user-facing response
@@ -416,6 +520,15 @@ extension AnthropicProvider {
             .filter { $0.type == "text" }
             .compactMap { $0.text }
             .joined()
+
+        // Issue 12.8: Validate non-empty response
+        // Allow empty text if stop_reason is "tool_use" since tool calls may not have text content
+        guard !responseText.isEmpty || response.stopReason == "tool_use" else {
+            throw AIError.generationFailed(underlying: SendableError(
+                NSError(domain: "com.anthropic.api", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "API returned empty content"])
+            ))
+        }
 
         // Future enhancement: thinking blocks could be exposed via GenerationResult metadata
         // Example: response.content.filter { $0.type == "thinking" }.compactMap { $0.text }
@@ -435,7 +548,8 @@ extension AnthropicProvider {
             usage: UsageStats(
                 promptTokens: response.usage.inputTokens,
                 completionTokens: response.usage.outputTokens
-            )
+            ),
+            rateLimitInfo: rateLimitInfo
         )
     }
 
@@ -450,6 +564,9 @@ extension AnthropicProvider {
     /// - `"end_turn"`: Natural completion → `.stop`
     /// - `"max_tokens"`: Hit token limit → `.maxTokens`
     /// - `"stop_sequence"`: Hit a stop sequence → `.stopSequence`
+    /// - `"tool_use"`: Tool call requested → `.toolCall`
+    /// - `"pause_turn"`: Long-running turn paused → `.pauseTurn`
+    /// - `"refusal"`: Content refused → `.contentFilter`
     /// - `nil` or unknown: Default → `.stop`
     ///
     /// ## Usage
@@ -471,6 +588,14 @@ extension AnthropicProvider {
             return .maxTokens
         case "stop_sequence":
             return .stopSequence
+        case "tool_use":
+            return .toolCall
+        case "pause_turn":
+            return .pauseTurn
+        case "refusal":
+            return .contentFilter
+        case "model_context_window_exceeded":
+            return .modelContextWindowExceeded
         default:
             return .stop
         }
