@@ -1,4 +1,4 @@
-# SwiftLint Configuration for SwiftAI
+# SwiftLint Configuration for Conduit
 
 disabled_rules:
   - todo
@@ -82,7 +82,7 @@ type_name:
 excluded:
   - .build
   - Package.swift
-  - Tests/SwiftAITests/Mocks
+  - Tests/ConduitTests/Mocks
 
 # Reporter type (xcode, json, csv, checkstyle, codeclimate, junit, html, emoji, sonarqube, markdown, github-actions-logging)
 reporter: "xcode"

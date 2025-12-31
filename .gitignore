@@ -13,3 +13,6 @@ CLAUDE.md
 
 # Osaurus project (separate codebase)
 osaurus/
+
+# Reference implementations (not part of build)
+clone/

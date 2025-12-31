@@ -1,15 +1,15 @@
-# SwiftAI
+# Conduit
 
 **Unified Swift SDK for LLM inference across local and cloud providers**
 
 [![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138.svg?style=flat&logo=swift)](https://swift.org)
-[![Platforms](https://img.shields.io/badge/Platforms-iOS%2017+%20|%20macOS%2014+%20|%20visionOS%201+-007AFF.svg?style=flat&logo=apple)](https://developer.apple.com)
+[![Platforms](https://img.shields.io/badge/Platforms-iOS%2017+%20|%20macOS%2014+%20|%20visionOS%201+%20|%20Linux-007AFF.svg?style=flat)](https://developer.apple.com)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.1.0-blue.svg?style=flat)](https://github.com/christopherkarani/SwiftAI/releases)
+[![Version](https://img.shields.io/badge/Version-0.6.0-blue.svg?style=flat)](https://github.com/christopherkarani/Conduit/releases)
 
 ---
 
-SwiftAI provides a clean, idiomatic Swift interface for LLM inference. Choose your provider explicitly—local inference with MLX on Apple Silicon, cloud inference via HuggingFace, or system-integrated AI with Apple Foundation Models on iOS 26+.
+Conduit provides a clean, idiomatic Swift interface for LLM inference. Choose your provider explicitly—local inference with MLX on Apple Silicon, cloud inference via HuggingFace, or system-integrated AI with Apple Foundation Models on iOS 26+.
 
 ## Features
 
@@ -30,22 +30,74 @@ SwiftAI provides a clean, idiomatic Swift interface for LLM inference. Choose yo
 
 ## Installation
 
-Add SwiftAI to your `Package.swift`:
+Add Conduit to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/christopherkarani/SwiftAI", from: "0.1.0")
+    .package(url: "https://github.com/christopherkarani/Conduit", from: "2.0.0")
 ]
 ```
 
-Then add `"SwiftAI"` to your target's dependencies.
+Then add `"Conduit"` to your target's dependencies.
+
+## Platform Support
+
+| Platform | Status | Available Providers |
+|:---------|:------:|:--------------------|
+| macOS 14+ | **Full** | MLX, Anthropic, OpenAI, HuggingFace, Foundation Models |
+| iOS 17+ | **Full** | MLX, Anthropic, OpenAI, HuggingFace, Foundation Models |
+| visionOS 1+ | **Full** | MLX, Anthropic, OpenAI, HuggingFace, Foundation Models |
+| **Linux** | **Partial** | Anthropic, OpenAI, HuggingFace |
+
+### Building on Linux
+
+Conduit supports Linux for server-side Swift deployments. To build on Linux:
+
+```bash
+# Set the environment variable to exclude Apple-only dependencies
+CONDUIT_LINUX=1 swift build
+
+# Run tests
+CONDUIT_LINUX=1 swift test
+```
+
+### Linux Limitations
+
+- **MLX Provider**: Requires Apple Silicon with Metal GPU (not available on Linux)
+- **Foundation Models**: Requires iOS 26+/macOS 26+ (not available on Linux)
+- **Image Generation**: `GeneratedImage.image` returns `nil` (use `data` or `save(to:)`)
+- **Keychain**: Token storage falls back to environment variables
+
+### Local Inference on Linux
+
+For local LLM inference on Linux, use **Ollama** via the OpenAI provider:
+
+```bash
+# Install Ollama on Linux
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a model
+ollama pull llama3.2
+```
+
+```swift
+import Conduit
+
+// Use Ollama for local inference on Linux
+let provider = OpenAIProvider(endpoint: .ollama, apiKey: nil)
+let response = try await provider.generate(
+    "Hello from Linux!",
+    model: .ollama("llama3.2"),
+    config: .default
+)
+```
 
 ## Quick Start
 
 ### Local Generation (MLX)
 
 ```swift
-import SwiftAI
+import Conduit
 
 let provider = MLXProvider()
 let response = try await provider.generate(
@@ -158,7 +210,7 @@ let provider = HuggingFaceProvider(configuration: config)
 let provider = HuggingFaceProvider()
 
 let embedding = try await provider.embed(
-    "SwiftAI makes LLM inference easy",
+    "Conduit makes LLM inference easy",
     model: .huggingFace("sentence-transformers/all-MiniLM-L6-v2")
 )
 
@@ -240,7 +292,7 @@ if #available(iOS 26.0, *) {
 
 ### Anthropic Claude
 
-SwiftAI includes first-class support for Anthropic's Claude models via the Anthropic API.
+Conduit includes first-class support for Anthropic's Claude models via the Anthropic API.
 
 **Best for:** Advanced reasoning, vision tasks, extended thinking, production applications
 
@@ -250,7 +302,7 @@ export ANTHROPIC_API_KEY=sk-ant-api-03-...
 ```
 
 ```swift
-import SwiftAI
+import Conduit
 
 // Simple generation
 let provider = AnthropicProvider(apiKey: "sk-ant-...")
@@ -327,7 +379,7 @@ Get your API key at: https://console.anthropic.com/
 
 ### Model Identifiers
 
-SwiftAI requires explicit model selection—no magic auto-detection:
+Conduit requires explicit model selection—no magic auto-detection:
 
 ```swift
 // MLX models (local)
@@ -440,7 +492,7 @@ Generate type-safe structured responses using the `@Generable` macro, mirroring 
 ### Defining Generable Types
 
 ```swift
-import SwiftAI
+import Conduit
 
 @Generable
 struct Recipe {
@@ -641,7 +693,7 @@ try await manager.evictToFit(maxSize: .gigabytes(30))
 try await manager.remove(.llama3_2_1B)
 ```
 
-**Storage Location:** `~/Library/Caches/SwiftAI/Models/`
+**Storage Location:** `~/Library/Caches/Conduit/Models/`
 
 ---
 
@@ -679,7 +731,7 @@ let decoded = try await provider.decode(tokens, for: .llama3_2_1B)
 
 ## Error Handling
 
-SwiftAI provides detailed, actionable errors:
+Conduit provides detailed, actionable errors:
 
 ```swift
 do {

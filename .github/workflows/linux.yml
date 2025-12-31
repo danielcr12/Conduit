@@ -1,0 +1,91 @@
+# Linux CI for SwiftAI
+#
+# This workflow builds and tests SwiftAI on Linux to ensure
+# cross-platform compatibility for server-side Swift deployments.
+#
+# On Linux, only cloud providers (Anthropic, OpenAI, HuggingFace)
+# are available. MLX local inference requires Apple Silicon.
+
+name: Linux Build
+
+on:
+  push:
+    branches: [main, develop, feature/*]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build-linux:
+    name: Build on Linux
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift Version
+        run: swift --version
+
+      - name: Build (Linux mode)
+        run: swift build -c release
+        env:
+          SWIFTAI_LINUX: "1"
+
+      - name: Run Tests
+        run: swift test
+        env:
+          SWIFTAI_LINUX: "1"
+
+  test-providers:
+    name: Test Cloud Providers
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+        env:
+          SWIFTAI_LINUX: "1"
+
+      - name: Test Anthropic Provider
+        run: swift test --filter AnthropicProviderTests || true
+        env:
+          SWIFTAI_LINUX: "1"
+
+      - name: Test OpenAI Provider
+        run: swift test --filter OpenAIProviderTests || true
+        env:
+          SWIFTAI_LINUX: "1"
+
+      - name: Test HuggingFace Provider
+        run: swift test --filter HuggingFaceProviderTests || true
+        env:
+          SWIFTAI_LINUX: "1"
+
+      - name: Test Linux Compatibility
+        run: swift test --filter LinuxCompatibilityTests || true
+        env:
+          SWIFTAI_LINUX: "1"
+
+  verify-macros:
+    name: Verify Macros on Linux
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Macros
+        run: swift build --target SwiftAIMacros
+        env:
+          SWIFTAI_LINUX: "1"
+
+      - name: Test Macros
+        run: swift test --filter SwiftAIMacrosTests || true
+        env:
+          SWIFTAI_LINUX: "1"
