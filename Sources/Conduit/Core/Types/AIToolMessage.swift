@@ -111,19 +111,11 @@ public struct AIToolCall: Sendable, Equatable, Identifiable, Hashable {
 
     // MARK: - Validation
 
-    /// Regular expression pattern for valid tool names.
-    ///
+    /// Regex pattern for valid tool names.
     /// Valid tool names contain only alphanumeric characters, underscores, and hyphens.
-    private static let validToolNamePattern = #"^[a-zA-Z0-9_-]+$"#
-
-    /// Cached compiled regex for tool name validation.
-    ///
-    /// Pre-compiled at static initialization to avoid per-call compilation overhead.
-    /// This is safe because the pattern is known-valid at compile time.
-    private static let validToolNameRegex: NSRegularExpression = {
-        // Force-unwrap is safe - pattern is a compile-time constant that's known valid
-        try! NSRegularExpression(pattern: validToolNamePattern)
-    }()
+    /// Using Swift regex literal for compile-time validation (no runtime failure risk).
+    /// Marked `nonisolated(unsafe)` because Regex literals are immutable and thread-safe.
+    nonisolated(unsafe) private static let validToolNameRegex = /^[a-zA-Z0-9_-]+$/
 
     /// Validates a tool name.
     ///
@@ -135,8 +127,7 @@ public struct AIToolCall: Sendable, Equatable, Identifiable, Hashable {
             throw AIError.invalidToolName(name: name, reason: "Tool name cannot be empty")
         }
 
-        let range = NSRange(name.startIndex..., in: name)
-        guard validToolNameRegex.firstMatch(in: name, range: range) != nil else {
+        guard name.wholeMatch(of: validToolNameRegex) != nil else {
             ConduitLoggers.tools.warning(
                 "Invalid tool name",
                 metadata: [

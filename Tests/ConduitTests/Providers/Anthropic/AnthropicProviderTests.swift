@@ -13,8 +13,8 @@ import Foundation
 struct AnthropicConfigurationTests {
 
     @Test("Default configuration uses Anthropic endpoint")
-    func defaultConfiguration() {
-        let config = AnthropicConfiguration()
+    func defaultConfiguration() throws {
+        let config = try AnthropicConfiguration()
         #expect(config.baseURL.absoluteString == "https://api.anthropic.com")
         #expect(config.apiVersion == "2023-06-01")
         #expect(config.timeout == 60.0)
@@ -39,8 +39,8 @@ struct AnthropicConfigurationTests {
     }
 
     @Test("Negative timeout is clamped to zero")
-    func timeoutClamping() {
-        let config = AnthropicConfiguration(timeout: -10.0)
+    func timeoutClamping() throws {
+        let config = try AnthropicConfiguration(timeout: -10.0)
         #expect(config.timeout == 0.0)
     }
 
@@ -52,6 +52,58 @@ struct AnthropicConfigurationTests {
         let standard = ThinkingConfiguration.standard
         #expect(standard.enabled == true)
         #expect(standard.budgetTokens == 1024)
+    }
+
+    @Test("HTTPS URL is accepted")
+    func httpsURLAccepted() throws {
+        let config = try AnthropicConfiguration(
+            baseURL: URL(string: "https://custom.api.example.com")!
+        )
+        #expect(config.baseURL.absoluteString == "https://custom.api.example.com")
+    }
+
+    @Test("HTTP URL is rejected")
+    func httpURLRejected() {
+        #expect(throws: AIError.self) {
+            _ = try AnthropicConfiguration(
+                baseURL: URL(string: "http://insecure.api.example.com")!
+            )
+        }
+    }
+
+    @Test("Localhost HTTP is allowed for development")
+    func localhostHTTPAllowed() throws {
+        // localhost hostname
+        let localhost = try AnthropicConfiguration(
+            baseURL: URL(string: "http://localhost:8080")!
+        )
+        #expect(localhost.baseURL.host == "localhost")
+
+        // 127.0.0.1
+        let ipv4 = try AnthropicConfiguration(
+            baseURL: URL(string: "http://127.0.0.1:8080")!
+        )
+        #expect(ipv4.baseURL.host == "127.0.0.1")
+
+        // IPv6 loopback
+        let ipv6 = try AnthropicConfiguration(
+            baseURL: URL(string: "http://[::1]:8080")!
+        )
+        #expect(ipv6.baseURL.host == "::1")
+    }
+
+    @Test("Fluent baseURL validates HTTPS")
+    func fluentBaseURLValidatesHTTPS() throws {
+        let config = AnthropicConfiguration.standard(apiKey: "sk-ant-test")
+
+        // HTTPS should work
+        let httpsConfig = try config.baseURL(URL(string: "https://custom.example.com")!)
+        #expect(httpsConfig.baseURL.absoluteString == "https://custom.example.com")
+
+        // HTTP should throw
+        #expect(throws: AIError.self) {
+            _ = try config.baseURL(URL(string: "http://insecure.example.com")!)
+        }
     }
 }
 

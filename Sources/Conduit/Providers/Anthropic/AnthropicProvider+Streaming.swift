@@ -199,6 +199,9 @@ extension AnthropicProvider {
             let task = Task {
                 do {
                     for try await chunk in streamWithMetadata(messages: messages, model: model, config: config) {
+                        // Check for task cancellation at the start of each iteration
+                        try Task.checkCancellation()
+
                         if !chunk.text.isEmpty {
                             continuation.yield(chunk.text)
                         }
@@ -320,6 +323,7 @@ extension AnthropicProvider {
             var errorData = Data()
             errorData.reserveCapacity(10_000)  // Pre-allocate for expected error size
             for try await byte in bytes {
+                try Task.checkCancellation()
                 errorData.append(byte)
                 if errorData.count > 10_000 { break } // Limit collection
             }
@@ -346,6 +350,9 @@ extension AnthropicProvider {
         var completedToolCalls: [AIToolCall] = []
 
         for try await line in bytes.lines {
+            // Check for task cancellation at the start of each iteration
+            try Task.checkCancellation()
+
             // Skip empty lines
             guard !line.isEmpty else { continue }
 
@@ -376,9 +383,10 @@ extension AnthropicProvider {
                     throw error
                 } catch {
                     // Issue 12.11: Log parsing errors for diagnostics
-                    #if DEBUG
-                    print("[AnthropicProvider] Failed to parse stream event: \(error)")
-                    #endif
+                    logger.debug(
+                        "Failed to parse stream event",
+                        metadata: ["error": .string("\(error)")]
+                    )
                     // Continue processing - don't fail the stream for single event parse errors
                 }
             }

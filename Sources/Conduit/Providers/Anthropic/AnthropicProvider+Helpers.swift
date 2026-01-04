@@ -405,7 +405,8 @@ extension AnthropicProvider {
                     let waitTime: TimeInterval
                     if statusCode == 429, let retryAfter = rateLimitInfo.retryAfter {
                         // Use Retry-After header for rate limits
-                        waitTime = retryAfter
+                        // Cap at 5 minutes to prevent DoS via excessive wait times
+                        waitTime = min(retryAfter, 300)
                     } else {
                         // Exponential backoff: 1s, 2s, 4s, 8s...
                         waitTime = pow(2.0, Double(attempt))

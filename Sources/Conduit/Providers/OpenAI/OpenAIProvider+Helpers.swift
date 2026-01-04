@@ -383,9 +383,10 @@ extension OpenAIProvider {
                     let cappedDelay = min(delay, 60.0)
                     // Use checked multiplication to prevent overflow
                     let nanoseconds = cappedDelay * 1_000_000_000
-                    // Ensure the result fits in UInt64
-                    guard nanoseconds <= Double(UInt64.max) else {
-                        try await Task.sleep(nanoseconds: UInt64.max)
+                    // Ensure the result is valid and fits in UInt64
+                    guard nanoseconds.isFinite && nanoseconds >= 0 && nanoseconds <= Double(UInt64.max) else {
+                        // Fallback to 60 seconds for invalid values
+                        try await Task.sleep(nanoseconds: UInt64(60 * 1_000_000_000))
                         continue
                     }
                     try await Task.sleep(nanoseconds: UInt64(nanoseconds))
@@ -407,6 +408,7 @@ extension OpenAIProvider {
                 if httpResponse.statusCode == 429 {
                     let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After")
                         .flatMap { Double($0) }
+                        .map { min($0, 300) }  // Cap at 5 minutes to prevent DoS
                     throw AIError.rateLimited(retryAfter: retryAfter)
                 }
 
@@ -439,10 +441,11 @@ extension OpenAIProvider {
               let choices = json["choices"] as? [[String: Any]],
               let firstChoice = choices.first,
               let message = firstChoice["message"] as? [String: Any] else {
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "<binary data>"
             throw AIError.generationFailed(underlying: SendableError(NSError(
                 domain: "OpenAIProvider",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
+                userInfo: [NSLocalizedDescriptionKey: "Invalid response format. Preview: \(preview)"]
             )))
         }
 
