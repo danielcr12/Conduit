@@ -5,7 +5,7 @@
 
 import Foundation
 import Hub
-import os.log
+import Logging
 
 /// Central manager for model downloads, caching, and lifecycle.
 ///
@@ -75,10 +75,7 @@ public actor ModelManager {
     // MARK: - Logger
 
     /// Logger for model management operations.
-    private static let logger = Logger(
-        subsystem: "com.swiftai.framework",
-        category: "ModelManager"
-    )
+    private static let logger = ConduitLoggers.modelManager
 
     // MARK: - Singleton
 

@@ -2,6 +2,7 @@
 // Conduit
 
 import Foundation
+import Logging
 
 // MARK: - AIToolCall
 
@@ -15,10 +16,10 @@ import Foundation
 ///
 /// ```swift
 /// // Received from LLM response
-/// let toolCall = AIToolCall(
+/// let toolCall = try AIToolCall(
 ///     id: "call_abc123",
 ///     toolName: "get_weather",
-///     arguments: try StructuredContent(json: "{\"city\": \"Paris\"}")
+///     arguments: StructuredContent(json: "{\"city\": \"Paris\"}")
 /// )
 ///
 /// // Execute the tool
@@ -73,29 +74,81 @@ public struct AIToolCall: Sendable, Equatable, Identifiable, Hashable {
 
     // MARK: - Initialization
 
-    /// Creates a new tool call.
+    /// Creates a new tool call with validation.
+    ///
+    /// Tool names must be non-empty and contain only alphanumeric characters,
+    /// underscores, and hyphens.
     ///
     /// - Parameters:
     ///   - id: A unique identifier for this call (from the LLM).
     ///   - toolName: The name of the tool to invoke.
     ///   - arguments: The structured arguments for the tool.
-    public init(id: String, toolName: String, arguments: StructuredContent) {
+    /// - Throws: `AIError.invalidToolName` if the tool name is invalid.
+    public init(id: String, toolName: String, arguments: StructuredContent) throws {
+        try Self.validateToolName(toolName)
         self.id = id
         self.toolName = toolName
         self.arguments = arguments
     }
 
-    /// Creates a new tool call from JSON string arguments.
+    /// Creates a new tool call from JSON string arguments with validation.
+    ///
+    /// Tool names must be non-empty and contain only alphanumeric characters,
+    /// underscores, and hyphens.
     ///
     /// - Parameters:
     ///   - id: A unique identifier for this call.
     ///   - toolName: The name of the tool to invoke.
     ///   - argumentsJSON: The JSON string containing the arguments.
-    /// - Throws: If the JSON string cannot be parsed.
+    /// - Throws: `AIError.invalidToolName` if the tool name is invalid.
+    /// - Throws: `StructuredContentError.invalidJSON` if the JSON string cannot be parsed.
     public init(id: String, toolName: String, argumentsJSON: String) throws {
+        try Self.validateToolName(toolName)
         self.id = id
         self.toolName = toolName
         self.arguments = try StructuredContent(json: argumentsJSON)
+    }
+
+    // MARK: - Validation
+
+    /// Regular expression pattern for valid tool names.
+    ///
+    /// Valid tool names contain only alphanumeric characters, underscores, and hyphens.
+    private static let validToolNamePattern = #"^[a-zA-Z0-9_-]+$"#
+
+    /// Cached compiled regex for tool name validation.
+    ///
+    /// Pre-compiled at static initialization to avoid per-call compilation overhead.
+    /// This is safe because the pattern is known-valid at compile time.
+    private static let validToolNameRegex: NSRegularExpression = {
+        // Force-unwrap is safe - pattern is a compile-time constant that's known valid
+        try! NSRegularExpression(pattern: validToolNamePattern)
+    }()
+
+    /// Validates a tool name.
+    ///
+    /// - Parameter name: The tool name to validate.
+    /// - Throws: `AIError.invalidToolName` if the name is invalid.
+    private static func validateToolName(_ name: String) throws {
+        if name.isEmpty {
+            ConduitLoggers.tools.warning("Invalid tool name: empty string")
+            throw AIError.invalidToolName(name: name, reason: "Tool name cannot be empty")
+        }
+
+        let range = NSRange(name.startIndex..., in: name)
+        guard validToolNameRegex.firstMatch(in: name, range: range) != nil else {
+            ConduitLoggers.tools.warning(
+                "Invalid tool name",
+                metadata: [
+                    "toolName": .string(name),
+                    "reason": .string("Contains invalid characters")
+                ]
+            )
+            throw AIError.invalidToolName(
+                name: name,
+                reason: "Tool name must contain only alphanumeric characters, underscores, and hyphens"
+            )
+        }
     }
 
     // MARK: - Methods
@@ -337,7 +390,10 @@ extension AIToolCall: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
-        self.toolName = try container.decode(String.self, forKey: .toolName)
+
+        let decodedToolName = try container.decode(String.self, forKey: .toolName)
+        try Self.validateToolName(decodedToolName)
+        self.toolName = decodedToolName
 
         // Arguments can be either a string (JSON) or an object
         if let jsonString = try? container.decode(String.self, forKey: .arguments) {
@@ -368,70 +424,3 @@ extension AIToolOutput: Codable {
     }
 }
 
-// MARK: - AnyCodable Helper
-
-/// A type-erased codable value for flexible JSON handling.
-///
-/// Used internally for decoding tool arguments that may have
-/// varying structures.
-private struct AnyCodable: Codable {
-    let value: Any
-
-    init(_ value: Any) {
-        self.value = value
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-
-        if container.decodeNil() {
-            self.value = NSNull()
-        } else if let bool = try? container.decode(Bool.self) {
-            self.value = bool
-        } else if let int = try? container.decode(Int.self) {
-            self.value = int
-        } else if let double = try? container.decode(Double.self) {
-            self.value = double
-        } else if let string = try? container.decode(String.self) {
-            self.value = string
-        } else if let array = try? container.decode([AnyCodable].self) {
-            self.value = array.map { $0.value }
-        } else if let dict = try? container.decode([String: AnyCodable].self) {
-            self.value = dict.mapValues { $0.value }
-        } else {
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Unable to decode value"
-            )
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-
-        switch value {
-        case is NSNull:
-            try container.encodeNil()
-        case let bool as Bool:
-            try container.encode(bool)
-        case let int as Int:
-            try container.encode(int)
-        case let double as Double:
-            try container.encode(double)
-        case let string as String:
-            try container.encode(string)
-        case let array as [Any]:
-            try container.encode(array.map { AnyCodable($0) })
-        case let dict as [String: Any]:
-            try container.encode(dict.mapValues { AnyCodable($0) })
-        default:
-            throw EncodingError.invalidValue(
-                value,
-                EncodingError.Context(
-                    codingPath: encoder.codingPath,
-                    debugDescription: "Unable to encode value"
-                )
-            )
-        }
-    }
-}

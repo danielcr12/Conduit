@@ -44,6 +44,7 @@ let crossPlatformDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.5.0"),
     .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
     .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0"),
+    .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
 ]
 
 // MARK: - Package Definition
@@ -79,6 +80,7 @@ let package = Package(
                 "ConduitMacros",
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "Logging", package: "swift-log"),
             ] + mlxTargetDependencies,
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")

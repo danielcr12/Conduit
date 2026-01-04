@@ -318,7 +318,7 @@ struct AnthropicResponseParsingTests {
             type: "message",
             role: "assistant",
             content: [
-                .init(type: "text", text: "Hello, world!")
+                .init(type: "text", text: "Hello, world!", id: nil, name: nil, input: nil)
             ],
             model: "claude-sonnet-4-5-20250929",
             stopReason: "end_turn",
@@ -342,8 +342,8 @@ struct AnthropicResponseParsingTests {
             type: "message",
             role: "assistant",
             content: [
-                .init(type: "text", text: "Part 1"),
-                .init(type: "text", text: " Part 2")
+                .init(type: "text", text: "Part 1", id: nil, name: nil, input: nil),
+                .init(type: "text", text: " Part 2", id: nil, name: nil, input: nil)
             ],
             model: "claude-sonnet-4-5-20250929",
             stopReason: "end_turn",
@@ -362,8 +362,8 @@ struct AnthropicResponseParsingTests {
             type: "message",
             role: "assistant",
             content: [
-                .init(type: "thinking", text: "Internal reasoning..."),
-                .init(type: "text", text: "User response")
+                .init(type: "thinking", text: "Internal reasoning...", id: nil, name: nil, input: nil),
+                .init(type: "text", text: "User response", id: nil, name: nil, input: nil)
             ],
             model: "claude-sonnet-4-5-20250929",
             stopReason: "end_turn",
@@ -381,7 +381,7 @@ struct AnthropicResponseParsingTests {
         // Test end_turn
         let endTurn = AnthropicMessagesResponse(
             id: "msg_1", type: "message", role: "assistant",
-            content: [.init(type: "text", text: "Done")],
+            content: [.init(type: "text", text: "Done", id: nil, name: nil, input: nil)],
             model: "test", stopReason: "end_turn",
             usage: .init(inputTokens: 1, outputTokens: 1)
         )
@@ -391,7 +391,7 @@ struct AnthropicResponseParsingTests {
         // Test max_tokens
         let maxTokens = AnthropicMessagesResponse(
             id: "msg_2", type: "message", role: "assistant",
-            content: [.init(type: "text", text: "Done")],
+            content: [.init(type: "text", text: "Done", id: nil, name: nil, input: nil)],
             model: "test", stopReason: "max_tokens",
             usage: .init(inputTokens: 1, outputTokens: 1)
         )
@@ -461,6 +461,8 @@ struct AnthropicStreamingEventTests {
     func skipNonDeltaEvents() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
         var tokenCount = 0
+        var activeToolCalls: [Int: (id: String, name: String, jsonBuffer: String)] = [:]
+        var completedToolCalls: [AIToolCall] = []
 
         // message_start should not yield
         let messageStart = AnthropicStreamEvent.MessageStart(
@@ -468,19 +470,38 @@ struct AnthropicStreamingEventTests {
                           content: [], model: "test",
                           stopReason: nil, stopSequence: nil)
         )
-        let chunk1 = try await provider.processStreamEvent(.messageStart(messageStart), startTime: Date(), totalTokens: &tokenCount)
+        let chunk1 = try await provider.processStreamEvent(
+            .messageStart(messageStart),
+            startTime: Date(),
+            totalTokens: &tokenCount,
+            activeToolCalls: &activeToolCalls,
+            completedToolCalls: &completedToolCalls
+        )
         #expect(chunk1 == nil)
 
         // content_block_stop should not yield
-        let chunk2 = try await provider.processStreamEvent(.contentBlockStop, startTime: Date(), totalTokens: &tokenCount)
+        let stopEvent = AnthropicStreamEvent.ContentBlockStop(index: 0)
+        let chunk2 = try await provider.processStreamEvent(
+            .contentBlockStop(stopEvent),
+            startTime: Date(),
+            totalTokens: &tokenCount,
+            activeToolCalls: &activeToolCalls,
+            completedToolCalls: &completedToolCalls
+        )
         #expect(chunk2 == nil)
 
         // content_block_delta should yield
         let delta = AnthropicStreamEvent.ContentBlockDelta(
             index: 0,
-            delta: .init(type: "text_delta", text: "Hi")
+            delta: .init(type: "text_delta", text: "Hi", partialJson: nil)
         )
-        let chunk3 = try await provider.processStreamEvent(.contentBlockDelta(delta), startTime: Date(), totalTokens: &tokenCount)
+        let chunk3 = try await provider.processStreamEvent(
+            .contentBlockDelta(delta),
+            startTime: Date(),
+            totalTokens: &tokenCount,
+            activeToolCalls: &activeToolCalls,
+            completedToolCalls: &completedToolCalls
+        )
         #expect(chunk3 != nil)
         #expect(chunk3?.text == "Hi")
     }

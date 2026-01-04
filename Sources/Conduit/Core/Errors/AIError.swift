@@ -193,6 +193,18 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
     /// The language is not supported by the model.
     case unsupportedLanguage(String)
 
+    // MARK: - Tool Errors
+
+    /// Invalid tool name.
+    ///
+    /// Tool names must be non-empty and contain only alphanumeric characters,
+    /// underscores, and hyphens.
+    ///
+    /// - Parameters:
+    ///   - name: The invalid tool name.
+    ///   - reason: Description of why the name is invalid.
+    case invalidToolName(name: String, reason: String)
+
     // MARK: - LocalizedError
 
     /// A localized description of the error.
@@ -276,6 +288,9 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
 
         case .unsupportedLanguage(let language):
             return "Unsupported language: \(language)"
+
+        case .invalidToolName(let name, let reason):
+            return "Invalid tool name '\(name)': \(reason)"
 
         case .unsupportedPlatform(let message):
             return "Unsupported platform: \(message)"
@@ -362,6 +377,9 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
 
         case .unsupportedLanguage:
             return "Use a supported language or enable auto-detection."
+
+        case .invalidToolName:
+            return "Use a tool name containing only alphanumeric characters, underscores, and hyphens."
 
         case .unsupportedPlatform:
             return "This operation requires specific hardware. Use a cloud provider as an alternative."
@@ -497,7 +515,7 @@ extension AIError {
             return .network
         case .insufficientMemory, .downloadFailed, .fileError, .insufficientDiskSpace, .checksumMismatch:
             return .resource
-        case .invalidInput, .unsupportedAudioFormat, .unsupportedLanguage:
+        case .invalidInput, .unsupportedAudioFormat, .unsupportedLanguage, .invalidToolName:
             return .input
         }
     }

@@ -3,6 +3,127 @@
 
 import Foundation
 
+// MARK: - Tool Call Constants
+
+/// Maximum allowed index for parallel tool calls in a single response.
+///
+/// This constant defines the upper bound (inclusive) for the `PartialToolCall.index` property,
+/// establishing a validated range of `0...100` for tool call indices.
+///
+/// ## Rationale
+///
+/// The limit of 100 parallel tool calls is based on several considerations:
+///
+/// - **Practical sufficiency**: Most real-world use cases involve 1-10 parallel tool calls.
+///   Even complex agentic workflows rarely exceed a dozen concurrent operations.
+///
+/// - **Memory management**: The streaming tool call accumulator uses dictionaries keyed by
+///   index. Unbounded indices could lead to memory exhaustion through malicious or malformed
+///   server responses.
+///
+/// - **Provider compatibility**: Neither OpenAI nor Anthropic document a specific limit for
+///   parallel tool calls, but 100 provides an extremely generous buffer while maintaining
+///   reasonable bounds.
+///
+/// - **Defense in depth**: Validating indices prevents potential integer overflow issues
+///   and ensures predictable behavior across all providers.
+///
+/// ## Usage
+///
+/// This constant is used internally to validate `PartialToolCall.index` values:
+///
+/// ```swift
+/// precondition((0...maxToolCallIndex).contains(index))
+/// ```
+///
+/// - SeeAlso: ``PartialToolCall``
+/// - SeeAlso: ``PartialToolCall/index``
+public let maxToolCallIndex = 100
+
+// MARK: - PartialToolCall
+
+/// A partial tool call being streamed.
+///
+/// During streaming, tool call arguments arrive as JSON fragments.
+/// This struct represents the current state of a tool call being assembled.
+///
+/// ## Usage
+///
+/// ```swift
+/// for try await chunk in stream {
+///     if let partial = chunk.partialToolCall {
+///         print("Tool \(partial.toolName) receiving: \(partial.argumentsFragment)")
+///     }
+///     if let completed = chunk.completedToolCalls {
+///         // Execute completed tool calls
+///         for call in completed {
+///             let result = try await executor.execute(call)
+///         }
+///     }
+/// }
+/// ```
+///
+/// ## Thread Safety
+///
+/// `PartialToolCall` is `Sendable` and can be safely passed across actor boundaries.
+public struct PartialToolCall: Sendable, Hashable {
+    /// Unique identifier for this tool call.
+    public let id: String
+
+    /// Name of the tool being called.
+    public let toolName: String
+
+    /// Index of this tool call in the response (for multiple parallel tool calls).
+    ///
+    /// When a model invokes multiple tools in a single response, each tool call is assigned
+    /// a unique index starting from 0. This index is used to correlate streaming argument
+    /// fragments with the correct tool call accumulator.
+    ///
+    /// ## Valid Range
+    ///
+    /// The index must be in the range `0...100` (see ``maxToolCallIndex``). This bound exists to:
+    /// - Prevent unbounded memory allocation in streaming accumulators
+    /// - Provide defense against malformed server responses
+    /// - Ensure predictable behavior across all providers
+    ///
+    /// Most real-world use cases involve indices 0-9, as models rarely invoke more than
+    /// 10 tools in parallel.
+    ///
+    /// - Precondition: Must be in range `0...maxToolCallIndex` (0...100).
+    /// - SeeAlso: ``maxToolCallIndex``
+    public let index: Int
+
+    /// Current accumulated arguments JSON fragment.
+    public let argumentsFragment: String
+
+    /// Creates a partial tool call.
+    ///
+    /// - Parameters:
+    ///   - id: Unique identifier for this tool call. Must not be empty.
+    ///   - toolName: Name of the tool being called. Must not be empty.
+    ///   - index: Index of this tool call in the response. Must be in range `0...maxToolCallIndex`.
+    ///   - argumentsFragment: Current accumulated arguments JSON fragment.
+    ///
+    /// - Precondition: `id` must not be empty.
+    /// - Precondition: `toolName` must not be empty.
+    /// - Precondition: `index` must be in range `0...maxToolCallIndex` (0...100).
+    public init(id: String, toolName: String, index: Int, argumentsFragment: String) {
+        precondition(!id.isEmpty, "PartialToolCall id must not be empty")
+        precondition(!toolName.isEmpty, "PartialToolCall toolName must not be empty")
+        precondition(
+            (0...maxToolCallIndex).contains(index),
+            "PartialToolCall index must be in range 0...\(maxToolCallIndex), got \(index)"
+        )
+
+        self.id = id
+        self.toolName = toolName
+        self.index = index
+        self.argumentsFragment = argumentsFragment
+    }
+}
+
+// MARK: - GenerationChunk
+
 /// A single chunk of streamed generation output.
 ///
 /// Represents one or more tokens yielded during streaming generation.
@@ -52,6 +173,23 @@ public struct GenerationChunk: Sendable, Hashable {
     /// Contains input and output token counts for the entire generation.
     public let usage: UsageStats?
 
+    /// Partial tool call update during streaming.
+    ///
+    /// When a tool call's arguments are being streamed, each chunk may contain
+    /// an update to the arguments JSON. Use this to show progress or for early parsing.
+    public let partialToolCall: PartialToolCall?
+
+    /// Completed tool calls in this chunk.
+    ///
+    /// Set in the final chunk when streaming tool calls are complete.
+    /// Contains fully assembled AIToolCall objects ready for execution.
+    public let completedToolCalls: [AIToolCall]?
+
+    /// Whether this chunk contains tool call updates.
+    public var hasToolCallUpdates: Bool {
+        partialToolCall != nil || (completedToolCalls?.isEmpty == false)
+    }
+
     /// Creates a generation chunk.
     ///
     /// - Parameters:
@@ -65,6 +203,8 @@ public struct GenerationChunk: Sendable, Hashable {
     ///   - finishReason: Reason generation stopped (for final chunk).
     ///   - timestamp: Chunk creation time (default: now).
     ///   - usage: Optional usage statistics (for final chunk).
+    ///   - partialToolCall: Partial tool call update during streaming.
+    ///   - completedToolCalls: Completed tool calls in this chunk.
     public init(
         text: String,
         tokenCount: Int = 1,
@@ -75,7 +215,9 @@ public struct GenerationChunk: Sendable, Hashable {
         isComplete: Bool = false,
         finishReason: FinishReason? = nil,
         timestamp: Date = Date(),
-        usage: UsageStats? = nil
+        usage: UsageStats? = nil,
+        partialToolCall: PartialToolCall? = nil,
+        completedToolCalls: [AIToolCall]? = nil
     ) {
         self.text = text
         self.tokenCount = tokenCount
@@ -87,6 +229,8 @@ public struct GenerationChunk: Sendable, Hashable {
         self.finishReason = finishReason
         self.timestamp = timestamp
         self.usage = usage
+        self.partialToolCall = partialToolCall
+        self.completedToolCalls = completedToolCalls
     }
 
     // MARK: - Factory Methods
@@ -119,6 +263,8 @@ extension GenerationChunk {
         hasher.combine(finishReason)
         hasher.combine(timestamp)
         hasher.combine(usage)
+        hasher.combine(partialToolCall)
+        hasher.combine(completedToolCalls)
     }
 
     public static func == (lhs: GenerationChunk, rhs: GenerationChunk) -> Bool {
@@ -131,6 +277,8 @@ extension GenerationChunk {
         lhs.isComplete == rhs.isComplete &&
         lhs.finishReason == rhs.finishReason &&
         lhs.timestamp == rhs.timestamp &&
-        lhs.usage == rhs.usage
+        lhs.usage == rhs.usage &&
+        lhs.partialToolCall == rhs.partialToolCall &&
+        lhs.completedToolCalls == rhs.completedToolCalls
     }
 }

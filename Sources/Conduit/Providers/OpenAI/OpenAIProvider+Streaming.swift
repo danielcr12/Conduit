@@ -4,6 +4,14 @@
 // Streaming text generation functionality for OpenAIProvider.
 
 import Foundation
+import Logging
+
+/// Maximum allowed size for accumulated tool call arguments (100KB).
+/// Prevents memory exhaustion from malicious or malformed responses.
+private let maxToolArgumentsSize = 100_000
+
+/// Logger for OpenAI streaming operations.
+private let logger = ConduitLoggers.streaming
 
 // MARK: - Streaming Methods
 
@@ -130,6 +138,11 @@ extension OpenAIProvider {
         let maxBufferSize = 50_000 // 50KB reasonable for a single SSE line
         let maxByteBufferSize = 4 // UTF-8 sequences are max 4 bytes
 
+        // Tool call accumulation by index
+        // Each entry tracks: id, name, and accumulated arguments buffer
+        var toolCallAccumulators: [Int: (id: String, name: String, argumentsBuffer: String)] = [:]
+        var completedToolCalls: [AIToolCall] = []
+
         for try await byte in bytes {
             try Task.checkCancellation()
 
@@ -183,12 +196,133 @@ extension OpenAIProvider {
                         let finishReasonStr = firstChoice["finish_reason"] as? String
                         let finishReason = finishReasonStr.flatMap { FinishReason(rawValue: $0) }
 
-                        // Only yield if there's content or if it's a final chunk with finish reason
-                        if let content = content, !content.isEmpty {
+                        // Process tool calls if present in delta
+                        var partialToolCall: PartialToolCall?
+                        if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+                            for tc in toolCalls {
+                                guard let index = tc["index"] as? Int else { continue }
+
+                                // Validate index is within reasonable bounds (0...100)
+                                guard (0...100).contains(index) else {
+                                    let toolName = (tc["function"] as? [String: Any])?["name"] as? String ?? "unknown"
+                                    logger.warning(
+                                        "Skipping tool call '\(toolName)' with invalid index \(index) (must be 0...100)"
+                                    )
+                                    continue
+                                }
+
+                                // First chunk for this tool call has id, type, and function name
+                                if let id = tc["id"] as? String,
+                                   let function = tc["function"] as? [String: Any],
+                                   let name = function["name"] as? String {
+                                    // Initialize accumulator with initial arguments (if any)
+                                    let args = function["arguments"] as? String ?? ""
+                                    toolCallAccumulators[index] = (id: id, name: name, argumentsBuffer: args)
+                                } else if let function = tc["function"] as? [String: Any],
+                                          let argsFragment = function["arguments"] as? String {
+                                    // Append to existing accumulator with buffer size check
+                                    if var acc = toolCallAccumulators[index] {
+                                        // Pre-allocate capacity on first append to avoid O(n²) string concatenation
+                                        if acc.argumentsBuffer.isEmpty {
+                                            acc.argumentsBuffer.reserveCapacity(min(4096, maxToolArgumentsSize))
+                                        }
+
+                                        let newSize = acc.argumentsBuffer.count + argsFragment.count
+                                        if newSize > maxToolArgumentsSize {
+                                            logger.warning(
+                                                "Tool call '\(acc.name)' arguments exceeded \(maxToolArgumentsSize) bytes, truncating"
+                                            )
+                                            let remaining = max(0, maxToolArgumentsSize - acc.argumentsBuffer.count)
+                                            acc.argumentsBuffer += String(argsFragment.prefix(remaining))
+                                        } else {
+                                            acc.argumentsBuffer += argsFragment
+                                        }
+                                        toolCallAccumulators[index] = acc
+                                    }
+                                }
+
+                                // Create partial tool call for streaming updates
+                                if let acc = toolCallAccumulators[index] {
+                                    partialToolCall = PartialToolCall(
+                                        id: acc.id,
+                                        toolName: acc.name,
+                                        index: index,
+                                        argumentsFragment: acc.argumentsBuffer
+                                    )
+                                }
+                            }
+                        }
+
+                        // Check if we should finalize tool calls
+                        let isToolCallsComplete = finishReason == .toolCalls || finishReason == .toolCall
+
+                        if isToolCallsComplete && !toolCallAccumulators.isEmpty {
+                            // Finalize all accumulated tool calls
+                            for (index, acc) in toolCallAccumulators.sorted(by: { $0.key < $1.key }) {
+                                do {
+                                    let toolCall = try AIToolCall(
+                                        id: acc.id,
+                                        toolName: acc.name,
+                                        argumentsJSON: acc.argumentsBuffer
+                                    )
+                                    completedToolCalls.append(toolCall)
+                                    logger.debug("Parsed tool call '\(acc.name)' at index \(index)")
+                                } catch {
+                                    // Try to repair incomplete JSON before giving up
+                                    let repairedJson = JsonRepair.repair(acc.argumentsBuffer)
+                                    if repairedJson != acc.argumentsBuffer {
+                                        logger.debug("Attempting JSON repair for '\(acc.name)'")
+                                        do {
+                                            let toolCall = try AIToolCall(
+                                                id: acc.id,
+                                                toolName: acc.name,
+                                                argumentsJSON: repairedJson
+                                            )
+                                            completedToolCalls.append(toolCall)
+                                            logger.info("Recovered tool call '\(acc.name)' via JSON repair")
+                                        } catch {
+                                            logger.warning(
+                                                "Failed to parse tool call '\(acc.name)' even after repair: \(error.localizedDescription)"
+                                            )
+                                            logger.debug("Original JSON: \(acc.argumentsBuffer.prefix(500))")
+                                            logger.debug("Repaired JSON: \(repairedJson.prefix(500))")
+                                        }
+                                    } else {
+                                        logger.warning(
+                                            "Failed to parse tool call '\(acc.name)': \(error.localizedDescription)"
+                                        )
+                                        logger.debug("Malformed JSON buffer: \(acc.argumentsBuffer.prefix(500))")
+                                    }
+                                }
+                            }
+
+                            // Yield final chunk with completed tool calls
+                            let chunk = GenerationChunk(
+                                text: content ?? "",
+                                tokenCount: content?.isEmpty == false ? 1 : 0,
+                                isComplete: true,
+                                finishReason: finishReason,
+                                completedToolCalls: completedToolCalls.isEmpty ? nil : completedToolCalls
+                            )
+                            continuation.yield(chunk)
+                            chunkIndex += 1
+                        } else if let content = content, !content.isEmpty {
+                            // Yield content chunk (may also include partial tool call)
                             let chunk = GenerationChunk(
                                 text: content,
                                 isComplete: finishReason != nil,
-                                finishReason: finishReason
+                                finishReason: finishReason,
+                                partialToolCall: partialToolCall
+                            )
+                            continuation.yield(chunk)
+                            chunkIndex += 1
+                        } else if partialToolCall != nil {
+                            // Yield chunk with only partial tool call update
+                            let chunk = GenerationChunk(
+                                text: "",
+                                tokenCount: 0,
+                                isComplete: false,
+                                partialToolCall: partialToolCall
                             )
                             continuation.yield(chunk)
                             chunkIndex += 1
