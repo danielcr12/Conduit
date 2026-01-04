@@ -40,6 +40,18 @@ dependencies: [
 
 Then add `"Conduit"` to your target's dependencies.
 
+### Enabling MLX (Apple Silicon Only)
+
+To use on-device MLX inference, enable the `MLX` trait:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/christopherkarani/Conduit", from: "2.0.0", traits: ["MLX"])
+]
+```
+
+> **Note**: MLX requires Apple Silicon with Metal GPU. Without the trait, only cloud providers are available.
+
 ## Platform Support
 
 | Platform | Status | Available Providers |
@@ -51,15 +63,14 @@ Then add `"Conduit"` to your target's dependencies.
 
 ### Building on Linux
 
-Conduit supports Linux for server-side Swift deployments. To build on Linux:
+Conduit supports Linux for server-side Swift deployments. Build normally with Swift 6.2+:
 
 ```bash
-# Set the environment variable to exclude Apple-only dependencies
-CONDUIT_LINUX=1 swift build
-
-# Run tests
-CONDUIT_LINUX=1 swift test
+swift build
+swift test
 ```
+
+By default, MLX dependencies are excluded (no trait enabled). This makes Conduit Linux-compatible out of the box.
 
 ### Linux Limitations
 

@@ -1,12 +1,12 @@
-# Linux CI for SwiftAI
+# Linux CI for Conduit
 #
-# This workflow builds and tests SwiftAI on Linux to ensure
+# This workflow builds and tests Conduit on Linux to ensure
 # cross-platform compatibility for server-side Swift deployments.
 #
-# On Linux, only cloud providers (Anthropic, OpenAI, HuggingFace)
-# are available. MLX local inference requires Apple Silicon.
+# On Linux, cloud providers (Anthropic, OpenAI, HuggingFace) are available.
+# MLX local inference requires Apple Silicon and the MLX trait.
 
-name: Linux Build
+name: Linux
 
 on:
   push:
@@ -15,77 +15,65 @@ on:
     branches: [main, develop]
 
 jobs:
-  build-linux:
-    name: Build on Linux
+  build-and-test:
+    name: Swift 6.2 on Linux
     runs-on: ubuntu-latest
-    container: swift:6.0-jammy
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: vapor/swiftly-action@v0.2
+        with:
+          toolchain: "6.2"
 
       - name: Swift Version
         run: swift --version
 
-      - name: Build (Linux mode)
-        run: swift build -c release
-        env:
-          SWIFTAI_LINUX: "1"
-
-      - name: Run Tests
-        run: swift test
-        env:
-          SWIFTAI_LINUX: "1"
-
-  test-providers:
-    name: Test Cloud Providers
-    runs-on: ubuntu-latest
-    container: swift:6.0-jammy
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            .build
+          key: linux-swift-6.2-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            linux-swift-6.2-spm-
 
       - name: Build
-        run: swift build
-        env:
-          SWIFTAI_LINUX: "1"
+        run: swift build -v
 
-      - name: Test Anthropic Provider
-        run: swift test --filter AnthropicProviderTests || true
-        env:
-          SWIFTAI_LINUX: "1"
+      - name: Test
+        run: swift test -v
 
-      - name: Test OpenAI Provider
-        run: swift test --filter OpenAIProviderTests || true
-        env:
-          SWIFTAI_LINUX: "1"
-
-      - name: Test HuggingFace Provider
-        run: swift test --filter HuggingFaceProviderTests || true
-        env:
-          SWIFTAI_LINUX: "1"
-
-      - name: Test Linux Compatibility
-        run: swift test --filter LinuxCompatibilityTests || true
-        env:
-          SWIFTAI_LINUX: "1"
-
-  verify-macros:
+  test-macros:
     name: Verify Macros on Linux
     runs-on: ubuntu-latest
-    container: swift:6.0-jammy
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Swift
+        uses: vapor/swiftly-action@v0.2
+        with:
+          toolchain: "6.2"
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            .build
+          key: linux-swift-6.2-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            linux-swift-6.2-spm-
+
       - name: Build Macros
-        run: swift build --target SwiftAIMacros
-        env:
-          SWIFTAI_LINUX: "1"
+        run: swift build --target ConduitMacros
 
       - name: Test Macros
-        run: swift test --filter SwiftAIMacrosTests || true
-        env:
-          SWIFTAI_LINUX: "1"
+        run: swift test --filter ConduitMacrosTests
