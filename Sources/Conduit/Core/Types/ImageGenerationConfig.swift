@@ -2,7 +2,7 @@
 // Conduit
 
 import Foundation
-import os.log
+import Logging
 
 /// Configuration for text-to-image generation.
 ///
@@ -53,10 +53,7 @@ import os.log
 public struct ImageGenerationConfig: Sendable, Hashable {
 
     /// Logger for validation warnings.
-    private static let logger = Logger(
-        subsystem: "com.swiftai.framework",
-        category: "ImageGenerationConfig"
-    )
+    private static let logger = ConduitLoggers.general
 
     /// The desired image width in pixels.
     ///

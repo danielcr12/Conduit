@@ -386,12 +386,16 @@ extension Message {
     /// ## Codable Representation
     /// - `.text`: `{"type": "text", "text": "..."}`
     /// - `.image`: `{"type": "image", "base64Data": "...", "mimeType": "..."}`
+    /// - `.audio`: `{"type": "audio", "base64Data": "...", "format": "..."}`
     public enum ContentPart: Sendable, Hashable, Codable {
         /// A text segment.
         case text(String)
 
         /// An embedded image.
         case image(ImageContent)
+
+        /// An embedded audio clip.
+        case audio(AudioContent)
 
         // MARK: - Codable
 
@@ -403,6 +407,7 @@ extension Message {
         /// ## Expected JSON
         /// - Text: `{"type": "text", "text": "..."}`
         /// - Image: `{"type": "image", "base64Data": "...", "mimeType": "..."}`
+        /// - Audio: `{"type": "audio", "base64Data": "...", "format": "..."}`
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: ContentPartCodingKeys.self)
             let type = try container.decode(PartType.self, forKey: .type)
@@ -415,6 +420,10 @@ extension Message {
                 let base64Data = try container.decode(String.self, forKey: .base64Data)
                 let mimeType = try container.decode(String.self, forKey: .mimeType)
                 self = .image(ImageContent(base64Data: base64Data, mimeType: mimeType))
+            case .audio:
+                let base64Data = try container.decode(String.self, forKey: .base64Data)
+                let format = try container.decode(AudioFormat.self, forKey: .format)
+                self = .audio(AudioContent(base64Data: base64Data, format: format))
             }
         }
 
@@ -426,6 +435,7 @@ extension Message {
         /// ## Generated JSON
         /// - Text: `{"type": "text", "text": "..."}`
         /// - Image: `{"type": "image", "base64Data": "...", "mimeType": "..."}`
+        /// - Audio: `{"type": "audio", "base64Data": "...", "format": "..."}`
         public func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: ContentPartCodingKeys.self)
 
@@ -437,6 +447,10 @@ extension Message {
                 try container.encode(PartType.image, forKey: .type)
                 try container.encode(imageContent.base64Data, forKey: .base64Data)
                 try container.encode(imageContent.mimeType, forKey: .mimeType)
+            case .audio(let audioContent):
+                try container.encode(PartType.audio, forKey: .type)
+                try container.encode(audioContent.base64Data, forKey: .base64Data)
+                try container.encode(audioContent.format, forKey: .format)
             }
         }
     }
@@ -448,11 +462,13 @@ extension Message {
         case text
         case base64Data
         case mimeType
+        case format
     }
 
     private enum PartType: String, Codable {
         case text
         case image
+        case audio
     }
 }
 
@@ -504,6 +520,77 @@ extension Message {
         public init(base64Data: String, mimeType: String = "image/jpeg") {
             self.base64Data = base64Data
             self.mimeType = mimeType
+        }
+    }
+
+    // MARK: - AudioFormat
+
+    /// Supported audio formats for audio input.
+    ///
+    /// These formats are supported by OpenRouter and OpenAI for audio input.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let audio = Message.AudioContent(base64Data: audioData, format: .wav)
+    /// ```
+    public enum AudioFormat: String, Sendable, Hashable, Codable, CaseIterable {
+        /// Waveform Audio File Format (.wav)
+        case wav
+        /// MPEG Audio Layer III (.mp3)
+        case mp3
+        /// Audio Interchange File Format (.aiff)
+        case aiff
+        /// Advanced Audio Coding (.aac)
+        case aac
+        /// Ogg Vorbis (.ogg)
+        case ogg
+        /// Free Lossless Audio Codec (.flac)
+        case flac
+        /// MPEG-4 Audio (.m4a)
+        case m4a
+    }
+
+    // MARK: - AudioContent
+
+    /// Audio content embedded in a message.
+    ///
+    /// Audio is represented as Base64-encoded data with a format specifier.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// // From audio file data
+    /// let audioData = try Data(contentsOf: audioURL)
+    /// let base64String = audioData.base64EncodedString()
+    /// let audio = Message.AudioContent(base64Data: base64String, format: .wav)
+    ///
+    /// // Use in message
+    /// let message = Message(
+    ///     role: .user,
+    ///     content: .parts([
+    ///         .audio(audio),
+    ///         .text("What is being said in this audio?")
+    ///     ])
+    /// )
+    /// ```
+    ///
+    /// ## Supported Formats
+    /// wav, mp3, aiff, aac, ogg, flac, m4a
+    public struct AudioContent: Sendable, Hashable, Codable {
+
+        /// Base64-encoded audio data.
+        public let base64Data: String
+
+        /// The format of the audio.
+        public let format: AudioFormat
+
+        /// Creates audio content from Base64-encoded data.
+        ///
+        /// - Parameters:
+        ///   - base64Data: The Base64-encoded audio string.
+        ///   - format: The audio format.
+        public init(base64Data: String, format: AudioFormat) {
+            self.base64Data = base64Data
+            self.format = format
         }
     }
 }

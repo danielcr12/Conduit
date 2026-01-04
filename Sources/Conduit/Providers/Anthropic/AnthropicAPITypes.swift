@@ -537,7 +537,7 @@ internal struct AnthropicMessagesResponse: Codable, Sendable {
     /// ## Types
     /// - `"text"`: Plain text content (response to user)
     /// - `"thinking"`: Extended thinking process (internal reasoning)
-    /// - `"tool_use"`: Tool/function call (not implemented here)
+    /// - `"tool_use"`: Tool/function call request from the model
     ///
     /// ## Extended Thinking
     ///
@@ -545,6 +545,18 @@ internal struct AnthropicMessagesResponse: Codable, Sendable {
     /// thinking blocks and text blocks:
     /// - **Thinking blocks**: Internal reasoning (not shown to user)
     /// - **Text blocks**: Final response (shown to user)
+    ///
+    /// ## Tool Use
+    ///
+    /// When the model wants to call a tool, it returns a tool_use block:
+    /// ```json
+    /// {
+    ///   "type": "tool_use",
+    ///   "id": "toolu_01A09q90qw90lq917835lgs",
+    ///   "name": "get_weather",
+    ///   "input": {"location": "San Francisco, CA"}
+    /// }
+    /// ```
     struct ContentBlock: Codable, Sendable {
 
         /// The type of content block.
@@ -552,6 +564,7 @@ internal struct AnthropicMessagesResponse: Codable, Sendable {
         /// Common values:
         /// - `"text"`: Plain text content
         /// - `"thinking"`: Extended thinking process
+        /// - `"tool_use"`: Tool/function call request
         let type: String
 
         /// The text content (if type is "text" or "thinking").
@@ -561,6 +574,31 @@ internal struct AnthropicMessagesResponse: Codable, Sendable {
         ///
         /// Optional because other block types (like "tool_use") don't have text.
         let text: String?
+
+        /// The tool call ID (if type is "tool_use").
+        ///
+        /// A unique identifier for this tool call that must be included
+        /// in the corresponding tool result message.
+        ///
+        /// Example: `"toolu_01A09q90qw90lq917835lgs"`
+        let id: String?
+
+        /// The tool name (if type is "tool_use").
+        ///
+        /// The name of the tool the model wants to call. Must match
+        /// a tool name provided in the request's `tools` array.
+        ///
+        /// Example: `"get_weather"`
+        let name: String?
+
+        /// The tool input arguments (if type is "tool_use").
+        ///
+        /// A dictionary of argument names to values that should be
+        /// passed to the tool. The structure matches the tool's
+        /// input schema.
+        ///
+        /// Example: `{"location": "San Francisco, CA", "unit": "celsius"}`
+        let input: [String: AnyCodable]?
     }
 
     // MARK: - Usage
@@ -686,7 +724,7 @@ internal enum AnthropicStreamEvent: Sendable {
     /// Content block stopped event.
     ///
     /// Emitted when a content block is complete.
-    case contentBlockStop
+    case contentBlockStop(ContentBlockStop)
 
     /// Message stopped event.
     ///
@@ -771,13 +809,33 @@ internal enum AnthropicStreamEvent: Sendable {
         let contentBlock: ContentBlockMetadata
 
         /// Content block metadata.
+        ///
+        /// For text blocks, only `type` and `text` are present.
+        /// For tool_use blocks, `id` and `name` are also present.
         struct ContentBlockMetadata: Codable, Sendable {
 
             /// Block type (e.g., `"text"`, `"tool_use"`).
             let type: String
 
             /// Initial text (typically empty for text blocks).
+            ///
+            /// Only present for text blocks.
             let text: String?
+
+            /// Tool call ID (only present when type == "tool_use").
+            ///
+            /// A unique identifier for this tool call that must be included
+            /// in the corresponding tool result message.
+            ///
+            /// Example: `"toolu_01A09q90qw90lq917835lgs"`
+            let id: String?
+
+            /// Tool name (only present when type == "tool_use").
+            ///
+            /// The name of the tool the model wants to call.
+            ///
+            /// Example: `"get_weather"`
+            let name: String?
         }
 
         // MARK: - Coding Keys
@@ -801,15 +859,58 @@ internal enum AnthropicStreamEvent: Sendable {
         /// The incremental delta.
         let delta: Delta
 
-        /// Incremental text delta.
+        /// Incremental delta for content blocks.
+        ///
+        /// Can be either a text delta or a tool input JSON delta:
+        /// - `text_delta`: Contains `text` with the text chunk to append.
+        /// - `input_json_delta`: Contains `partialJson` with a JSON fragment.
         struct Delta: Codable, Sendable {
 
-            /// Delta type (always `"text_delta"` for text).
+            /// Delta type.
+            ///
+            /// - `"text_delta"`: Text content update
+            /// - `"input_json_delta"`: Tool argument JSON fragment
             let type: String
 
-            /// The text chunk to append.
-            let text: String
+            /// The text chunk to append (when type == "text_delta").
+            ///
+            /// Only present for text deltas.
+            let text: String?
+
+            /// Tool input JSON fragment (when type == "input_json_delta").
+            ///
+            /// A partial JSON string that should be accumulated until
+            /// the content block is complete.
+            let partialJson: String?
+
+            // MARK: - Coding Keys
+
+            enum CodingKeys: String, CodingKey {
+                case type
+                case text
+                case partialJson = "partial_json"
+            }
         }
+    }
+
+    // MARK: - ContentBlockStop
+
+    /// Data for `content_block_stop` event.
+    ///
+    /// Indicates a content block is complete. Used to finalize tool call
+    /// argument accumulation.
+    ///
+    /// ## JSON Structure
+    /// ```json
+    /// {
+    ///   "type": "content_block_stop",
+    ///   "index": 0
+    /// }
+    /// ```
+    struct ContentBlockStop: Codable, Sendable {
+
+        /// Index of the content block that stopped.
+        let index: Int
     }
 
     // MARK: - MessageDelta
@@ -921,3 +1022,5 @@ internal enum AnthropicStreamEvent: Sendable {
         }
     }
 }
+
+// Note: AnyCodable is now defined in Core/Types/AnyCodable.swift

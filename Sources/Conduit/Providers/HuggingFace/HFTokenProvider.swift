@@ -172,12 +172,13 @@ public enum HFTokenProvider: Sendable, Hashable {
 extension HFTokenProvider {
 
     public func hash(into hasher: inout Hasher) {
+        // Only hash token presence, not value, to prevent credential leakage in logs/debug output
         switch self {
         case .auto:
             hasher.combine("auto")
         case .static(let token):
             hasher.combine("static")
-            hasher.combine(token)
+            hasher.combine(!token.isEmpty)
         case .keychain(let service, let account):
             hasher.combine("keychain")
             hasher.combine(service)
@@ -192,7 +193,15 @@ extension HFTokenProvider {
         case (.auto, .auto):
             return true
         case (.static(let lhsToken), .static(let rhsToken)):
-            return lhsToken == rhsToken
+            // Use constant-time comparison via Data to prevent timing attacks
+            let lhsData = Data(lhsToken.utf8)
+            let rhsData = Data(rhsToken.utf8)
+            guard lhsData.count == rhsData.count else { return false }
+            var result: UInt8 = 0
+            for (lhsByte, rhsByte) in zip(lhsData, rhsData) {
+                result |= lhsByte ^ rhsByte
+            }
+            return result == 0
         case (.keychain(let lhsService, let lhsAccount), .keychain(let rhsService, let rhsAccount)):
             return lhsService == rhsService && lhsAccount == rhsAccount
         case (.none, .none):

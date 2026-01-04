@@ -164,11 +164,9 @@ private extension JsonRepair {
                         bracketStack.removeLast()
                     } else if bracketStack.last == .bracket {
                         // Mismatch: expected ] but got }
-                        // Pop the bracket - the } will close the outer brace
+                        // Only pop the mismatched bracket - repair() will add
+                        // necessary closing brackets at the end
                         bracketStack.removeLast()
-                        if !bracketStack.isEmpty && bracketStack.last == .brace {
-                            bracketStack.removeLast()
-                        }
                     }
                 case "[":
                     bracketStack.append(.bracket)
@@ -178,11 +176,9 @@ private extension JsonRepair {
                         bracketStack.removeLast()
                     } else if bracketStack.last == .brace {
                         // Mismatch: expected } but got ]
-                        // Pop the brace - the ] will close the outer bracket
+                        // Only pop the mismatched brace - repair() will add
+                        // necessary closing brackets at the end
                         bracketStack.removeLast()
-                        if !bracketStack.isEmpty && bracketStack.last == .bracket {
-                            bracketStack.removeLast()
-                        }
                     }
                 default:
                     break

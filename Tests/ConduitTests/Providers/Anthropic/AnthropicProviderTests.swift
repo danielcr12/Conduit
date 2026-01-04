@@ -13,8 +13,8 @@ import Foundation
 struct AnthropicConfigurationTests {
 
     @Test("Default configuration uses Anthropic endpoint")
-    func defaultConfiguration() {
-        let config = AnthropicConfiguration()
+    func defaultConfiguration() throws {
+        let config = try AnthropicConfiguration()
         #expect(config.baseURL.absoluteString == "https://api.anthropic.com")
         #expect(config.apiVersion == "2023-06-01")
         #expect(config.timeout == 60.0)
@@ -39,8 +39,8 @@ struct AnthropicConfigurationTests {
     }
 
     @Test("Negative timeout is clamped to zero")
-    func timeoutClamping() {
-        let config = AnthropicConfiguration(timeout: -10.0)
+    func timeoutClamping() throws {
+        let config = try AnthropicConfiguration(timeout: -10.0)
         #expect(config.timeout == 0.0)
     }
 
@@ -52,6 +52,58 @@ struct AnthropicConfigurationTests {
         let standard = ThinkingConfiguration.standard
         #expect(standard.enabled == true)
         #expect(standard.budgetTokens == 1024)
+    }
+
+    @Test("HTTPS URL is accepted")
+    func httpsURLAccepted() throws {
+        let config = try AnthropicConfiguration(
+            baseURL: URL(string: "https://custom.api.example.com")!
+        )
+        #expect(config.baseURL.absoluteString == "https://custom.api.example.com")
+    }
+
+    @Test("HTTP URL is rejected")
+    func httpURLRejected() {
+        #expect(throws: AIError.self) {
+            _ = try AnthropicConfiguration(
+                baseURL: URL(string: "http://insecure.api.example.com")!
+            )
+        }
+    }
+
+    @Test("Localhost HTTP is allowed for development")
+    func localhostHTTPAllowed() throws {
+        // localhost hostname
+        let localhost = try AnthropicConfiguration(
+            baseURL: URL(string: "http://localhost:8080")!
+        )
+        #expect(localhost.baseURL.host == "localhost")
+
+        // 127.0.0.1
+        let ipv4 = try AnthropicConfiguration(
+            baseURL: URL(string: "http://127.0.0.1:8080")!
+        )
+        #expect(ipv4.baseURL.host == "127.0.0.1")
+
+        // IPv6 loopback
+        let ipv6 = try AnthropicConfiguration(
+            baseURL: URL(string: "http://[::1]:8080")!
+        )
+        #expect(ipv6.baseURL.host == "::1")
+    }
+
+    @Test("Fluent baseURL validates HTTPS")
+    func fluentBaseURLValidatesHTTPS() throws {
+        let config = AnthropicConfiguration.standard(apiKey: "sk-ant-test")
+
+        // HTTPS should work
+        let httpsConfig = try config.baseURL(URL(string: "https://custom.example.com")!)
+        #expect(httpsConfig.baseURL.absoluteString == "https://custom.example.com")
+
+        // HTTP should throw
+        #expect(throws: AIError.self) {
+            _ = try config.baseURL(URL(string: "http://insecure.example.com")!)
+        }
     }
 }
 
@@ -318,7 +370,7 @@ struct AnthropicResponseParsingTests {
             type: "message",
             role: "assistant",
             content: [
-                .init(type: "text", text: "Hello, world!")
+                .init(type: "text", text: "Hello, world!", id: nil, name: nil, input: nil)
             ],
             model: "claude-sonnet-4-5-20250929",
             stopReason: "end_turn",
@@ -342,8 +394,8 @@ struct AnthropicResponseParsingTests {
             type: "message",
             role: "assistant",
             content: [
-                .init(type: "text", text: "Part 1"),
-                .init(type: "text", text: " Part 2")
+                .init(type: "text", text: "Part 1", id: nil, name: nil, input: nil),
+                .init(type: "text", text: " Part 2", id: nil, name: nil, input: nil)
             ],
             model: "claude-sonnet-4-5-20250929",
             stopReason: "end_turn",
@@ -362,8 +414,8 @@ struct AnthropicResponseParsingTests {
             type: "message",
             role: "assistant",
             content: [
-                .init(type: "thinking", text: "Internal reasoning..."),
-                .init(type: "text", text: "User response")
+                .init(type: "thinking", text: "Internal reasoning...", id: nil, name: nil, input: nil),
+                .init(type: "text", text: "User response", id: nil, name: nil, input: nil)
             ],
             model: "claude-sonnet-4-5-20250929",
             stopReason: "end_turn",
@@ -381,7 +433,7 @@ struct AnthropicResponseParsingTests {
         // Test end_turn
         let endTurn = AnthropicMessagesResponse(
             id: "msg_1", type: "message", role: "assistant",
-            content: [.init(type: "text", text: "Done")],
+            content: [.init(type: "text", text: "Done", id: nil, name: nil, input: nil)],
             model: "test", stopReason: "end_turn",
             usage: .init(inputTokens: 1, outputTokens: 1)
         )
@@ -391,7 +443,7 @@ struct AnthropicResponseParsingTests {
         // Test max_tokens
         let maxTokens = AnthropicMessagesResponse(
             id: "msg_2", type: "message", role: "assistant",
-            content: [.init(type: "text", text: "Done")],
+            content: [.init(type: "text", text: "Done", id: nil, name: nil, input: nil)],
             model: "test", stopReason: "max_tokens",
             usage: .init(inputTokens: 1, outputTokens: 1)
         )
@@ -461,6 +513,8 @@ struct AnthropicStreamingEventTests {
     func skipNonDeltaEvents() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-test")
         var tokenCount = 0
+        var activeToolCalls: [Int: (id: String, name: String, jsonBuffer: String)] = [:]
+        var completedToolCalls: [AIToolCall] = []
 
         // message_start should not yield
         let messageStart = AnthropicStreamEvent.MessageStart(
@@ -468,19 +522,38 @@ struct AnthropicStreamingEventTests {
                           content: [], model: "test",
                           stopReason: nil, stopSequence: nil)
         )
-        let chunk1 = try await provider.processStreamEvent(.messageStart(messageStart), startTime: Date(), totalTokens: &tokenCount)
+        let chunk1 = try await provider.processStreamEvent(
+            .messageStart(messageStart),
+            startTime: Date(),
+            totalTokens: &tokenCount,
+            activeToolCalls: &activeToolCalls,
+            completedToolCalls: &completedToolCalls
+        )
         #expect(chunk1 == nil)
 
         // content_block_stop should not yield
-        let chunk2 = try await provider.processStreamEvent(.contentBlockStop, startTime: Date(), totalTokens: &tokenCount)
+        let stopEvent = AnthropicStreamEvent.ContentBlockStop(index: 0)
+        let chunk2 = try await provider.processStreamEvent(
+            .contentBlockStop(stopEvent),
+            startTime: Date(),
+            totalTokens: &tokenCount,
+            activeToolCalls: &activeToolCalls,
+            completedToolCalls: &completedToolCalls
+        )
         #expect(chunk2 == nil)
 
         // content_block_delta should yield
         let delta = AnthropicStreamEvent.ContentBlockDelta(
             index: 0,
-            delta: .init(type: "text_delta", text: "Hi")
+            delta: .init(type: "text_delta", text: "Hi", partialJson: nil)
         )
-        let chunk3 = try await provider.processStreamEvent(.contentBlockDelta(delta), startTime: Date(), totalTokens: &tokenCount)
+        let chunk3 = try await provider.processStreamEvent(
+            .contentBlockDelta(delta),
+            startTime: Date(),
+            totalTokens: &tokenCount,
+            activeToolCalls: &activeToolCalls,
+            completedToolCalls: &completedToolCalls
+        )
         #expect(chunk3 != nil)
         #expect(chunk3?.text == "Hi")
     }

@@ -4,6 +4,14 @@
 // Streaming implementation for AnthropicProvider with Server-Sent Events (SSE) parsing.
 
 import Foundation
+import Logging
+
+/// Maximum allowed size for accumulated tool call arguments (100KB).
+/// Prevents memory exhaustion from malicious or malformed responses.
+private let maxToolArgumentsSize = 100_000
+
+/// Logger for Anthropic streaming diagnostics.
+private let logger = ConduitLoggers.streaming
 
 // MARK: - Streaming Implementation
 
@@ -191,6 +199,9 @@ extension AnthropicProvider {
             let task = Task {
                 do {
                     for try await chunk in streamWithMetadata(messages: messages, model: model, config: config) {
+                        // Check for task cancellation at the start of each iteration
+                        try Task.checkCancellation()
+
                         if !chunk.text.isEmpty {
                             continuation.yield(chunk.text)
                         }
@@ -312,6 +323,7 @@ extension AnthropicProvider {
             var errorData = Data()
             errorData.reserveCapacity(10_000)  // Pre-allocate for expected error size
             for try await byte in bytes {
+                try Task.checkCancellation()
                 errorData.append(byte)
                 if errorData.count > 10_000 { break } // Limit collection
             }
@@ -332,7 +344,15 @@ extension AnthropicProvider {
         var totalTokens = 0
         let startTime = Date()
 
+        // Tool call accumulation state
+        // Maps content block index to (id, name, jsonBuffer)
+        var activeToolCalls: [Int: (id: String, name: String, jsonBuffer: String)] = [:]
+        var completedToolCalls: [AIToolCall] = []
+
         for try await line in bytes.lines {
+            // Check for task cancellation at the start of each iteration
+            try Task.checkCancellation()
+
             // Skip empty lines
             guard !line.isEmpty else { continue }
 
@@ -348,7 +368,13 @@ extension AnthropicProvider {
                 // Issue 12.11: Parse event with error logging for diagnostics
                 do {
                     if let event = try parseStreamEvent(from: eventData) {
-                        if let chunk = try processStreamEvent(event, startTime: startTime, totalTokens: &totalTokens) {
+                        if let chunk = try processStreamEvent(
+                            event,
+                            startTime: startTime,
+                            totalTokens: &totalTokens,
+                            activeToolCalls: &activeToolCalls,
+                            completedToolCalls: &completedToolCalls
+                        ) {
                             continuation.yield(chunk)
                         }
                     }
@@ -357,9 +383,10 @@ extension AnthropicProvider {
                     throw error
                 } catch {
                     // Issue 12.11: Log parsing errors for diagnostics
-                    #if DEBUG
-                    print("[AnthropicProvider] Failed to parse stream event: \(error)")
-                    #endif
+                    logger.debug(
+                        "Failed to parse stream event",
+                        metadata: ["error": .string("\(error)")]
+                    )
                     // Continue processing - don't fail the stream for single event parse errors
                 }
             }
@@ -429,7 +456,8 @@ extension AnthropicProvider {
             return .contentBlockDelta(event)
 
         case "content_block_stop":
-            return .contentBlockStop
+            let event = try decoder.decode(AnthropicStreamEvent.ContentBlockStop.self, from: data)
+            return .contentBlockStop(event)
 
         case "message_stop":
             return .messageStop
@@ -459,13 +487,21 @@ extension AnthropicProvider {
     /// ## Event Processing
     ///
     /// - `messageStart`: Metadata only, returns `nil`
-    /// - `contentBlockStart`: Metadata only, returns `nil`
-    /// - `contentBlockDelta`: **Contains text**, returns `GenerationChunk`
-    /// - `contentBlockStop`: Metadata only, returns `nil`
-    /// - `messageDelta`: **Contains usage stats**, returns final `GenerationChunk`
+    /// - `contentBlockStart`: Initializes tool call state for tool_use blocks, returns `nil`
+    /// - `contentBlockDelta`: **Contains text or tool JSON**, returns `GenerationChunk` for text
+    /// - `contentBlockStop`: Finalizes tool calls, returns `nil`
+    /// - `messageDelta`: **Contains usage stats**, returns final `GenerationChunk` with tool calls
     /// - `messageStop`: Metadata only, returns `nil`
     /// - `error`: **Throws AIError** to propagate to stream consumer
     /// - `ping`: Keep-alive heartbeat, returns `nil`
+    ///
+    /// ## Tool Call Handling
+    ///
+    /// Tool calls are accumulated during streaming:
+    /// 1. `contentBlockStart` with type="tool_use" initializes a new tool call
+    /// 2. `contentBlockDelta` with type="input_json_delta" accumulates JSON fragments
+    /// 3. `contentBlockStop` finalizes the tool call and adds it to completedToolCalls
+    /// 4. `messageDelta` returns the final chunk with all completed tool calls
     ///
     /// ## Performance Metrics
     ///
@@ -476,7 +512,13 @@ extension AnthropicProvider {
     ///
     /// ## Usage
     /// ```swift
-    /// if let chunk = try processStreamEvent(event, startTime: startTime, totalTokens: &totalTokens) {
+    /// if let chunk = try processStreamEvent(
+    ///     event,
+    ///     startTime: startTime,
+    ///     totalTokens: &totalTokens,
+    ///     activeToolCalls: &activeToolCalls,
+    ///     completedToolCalls: &completedToolCalls
+    /// ) {
     ///     continuation.yield(chunk)
     /// }
     /// ```
@@ -485,39 +527,132 @@ extension AnthropicProvider {
     ///   - event: The parsed stream event.
     ///   - startTime: When generation started (for performance metrics).
     ///   - totalTokens: Running total of tokens (incremented for text deltas).
+    ///   - activeToolCalls: Currently accumulating tool calls (by content block index).
+    ///   - completedToolCalls: Finalized tool calls ready to be returned.
     ///
-    /// - Returns: A `GenerationChunk` if this event contains text, `nil` otherwise.
+    /// - Returns: A `GenerationChunk` if this event contains text or completes generation, `nil` otherwise.
     ///
     /// - Throws: `AIError.serverError` if an error event is received.
     internal func processStreamEvent(
         _ event: AnthropicStreamEvent,
         startTime: Date,
-        totalTokens: inout Int
+        totalTokens: inout Int,
+        activeToolCalls: inout [Int: (id: String, name: String, jsonBuffer: String)],
+        completedToolCalls: inout [AIToolCall]
     ) throws -> GenerationChunk? {
         switch event {
-        case .contentBlockDelta(let delta):
-            // This is the only event that yields actual text
-            // NOTE: Token count is approximate during streaming. Each content_block_delta
-            // is counted as 1 token, but may contain multiple tokens. Accurate counts
-            // are available in the final message_delta event via UsageStats.
-            totalTokens += 1
-            let duration = Date().timeIntervalSince(startTime)
-            let tokensPerSecond = duration > 0 ? Double(totalTokens) / duration : 0
+        case .contentBlockStart(let start):
+            // Initialize tool call state for tool_use blocks
+            if start.contentBlock.type == "tool_use",
+               let id = start.contentBlock.id,
+               let name = start.contentBlock.name {
+                // Validate index is within reasonable bounds (0...100)
+                guard (0...100).contains(start.index) else {
+                    logger.warning(
+                        "Skipping tool call '\(name)' with invalid index \(start.index) (must be 0...100)"
+                    )
+                    return nil
+                }
+                activeToolCalls[start.index] = (id: id, name: name, jsonBuffer: "")
+            }
+            return nil
 
-            return GenerationChunk(
-                text: delta.delta.text,
-                tokenCount: 1,
-                tokenId: nil,
-                logprob: nil,
-                topLogprobs: nil,
-                tokensPerSecond: tokensPerSecond,
-                isComplete: false,
-                finishReason: nil,
-                timestamp: Date()
-            )
+        case .contentBlockDelta(let delta):
+            // Handle text deltas
+            if delta.delta.type == "text_delta", let text = delta.delta.text {
+                // NOTE: Token count is approximate during streaming. Each content_block_delta
+                // is counted as 1 token, but may contain multiple tokens. Accurate counts
+                // are available in the final message_delta event via UsageStats.
+                totalTokens += 1
+                let duration = Date().timeIntervalSince(startTime)
+                let tokensPerSecond = duration > 0 ? Double(totalTokens) / duration : 0
+
+                return GenerationChunk(
+                    text: text,
+                    tokenCount: 1,
+                    tokenId: nil,
+                    logprob: nil,
+                    topLogprobs: nil,
+                    tokensPerSecond: tokensPerSecond,
+                    isComplete: false,
+                    finishReason: nil,
+                    timestamp: Date()
+                )
+            }
+
+            // Handle tool input JSON deltas
+            if delta.delta.type == "input_json_delta", let partialJson = delta.delta.partialJson {
+                if var toolData = activeToolCalls[delta.index] {
+                    // Pre-allocate capacity on first append to avoid O(n²) string concatenation
+                    if toolData.jsonBuffer.isEmpty {
+                        toolData.jsonBuffer.reserveCapacity(min(4096, maxToolArgumentsSize))
+                    }
+
+                    // Check buffer size limit to prevent memory exhaustion
+                    let newSize = toolData.jsonBuffer.count + partialJson.count
+                    if newSize > maxToolArgumentsSize {
+                        logger.warning(
+                            "Tool call '\(toolData.name)' arguments exceeded \(maxToolArgumentsSize) bytes, truncating"
+                        )
+                        // Truncate to limit - this will likely result in invalid JSON,
+                        // which will be caught during finalization
+                        let remaining = max(0, maxToolArgumentsSize - toolData.jsonBuffer.count)
+                        toolData.jsonBuffer += String(partialJson.prefix(remaining))
+                    } else {
+                        toolData.jsonBuffer += partialJson
+                    }
+                    activeToolCalls[delta.index] = toolData
+                }
+                // Optionally could yield a PartialToolCall chunk here for progress tracking
+            }
+
+            return nil
+
+        case .contentBlockStop(let stop):
+            // Finalize tool call if we have one at this index
+            if let toolData = activeToolCalls.removeValue(forKey: stop.index) {
+                // Only create tool call if we have accumulated JSON
+                let jsonBuffer = toolData.jsonBuffer.isEmpty ? "{}" : toolData.jsonBuffer
+                do {
+                    let toolCall = try AIToolCall(
+                        id: toolData.id,
+                        toolName: toolData.name,
+                        argumentsJSON: jsonBuffer
+                    )
+                    completedToolCalls.append(toolCall)
+                    logger.debug("Parsed tool call '\(toolData.name)' with id '\(toolData.id)'")
+                } catch {
+                    // Try to repair incomplete JSON before giving up
+                    let repairedJson = JsonRepair.repair(jsonBuffer)
+                    if repairedJson != jsonBuffer {
+                        logger.debug("Attempting JSON repair for '\(toolData.name)'")
+                        do {
+                            let toolCall = try AIToolCall(
+                                id: toolData.id,
+                                toolName: toolData.name,
+                                argumentsJSON: repairedJson
+                            )
+                            completedToolCalls.append(toolCall)
+                            logger.info("Recovered tool call '\(toolData.name)' via JSON repair")
+                        } catch {
+                            logger.warning(
+                                "Failed to parse tool call '\(toolData.name)' even after repair: \(error.localizedDescription)"
+                            )
+                            logger.debug("Original JSON: \(jsonBuffer.prefix(500))")
+                            logger.debug("Repaired JSON: \(repairedJson.prefix(500))")
+                        }
+                    } else {
+                        logger.warning(
+                            "Failed to parse tool call '\(toolData.name)': \(error.localizedDescription)"
+                        )
+                        logger.debug("Malformed JSON buffer: \(jsonBuffer.prefix(500))")
+                    }
+                }
+            }
+            return nil
 
         case .messageDelta(let delta):
-            // Final event with usage statistics and stop reason
+            // Final event with usage statistics, stop reason, and completed tool calls
             return GenerationChunk(
                 text: "",
                 tokenCount: 0,
@@ -531,7 +666,8 @@ extension AnthropicProvider {
                 usage: UsageStats(
                     promptTokens: delta.usage.inputTokens,
                     completionTokens: delta.usage.outputTokens
-                )
+                ),
+                completedToolCalls: completedToolCalls.isEmpty ? nil : completedToolCalls
             )
 
         case .error(let streamError):
@@ -546,7 +682,7 @@ extension AnthropicProvider {
             return nil
 
         default:
-            // message_start, content_block_start, content_block_stop, message_stop are metadata only
+            // message_start, message_stop are metadata only
             return nil
         }
     }

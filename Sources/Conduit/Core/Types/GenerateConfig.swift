@@ -203,6 +203,36 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
     /// - `.tool(name:)`: Model must use the specified tool
     public var toolChoice: ToolChoice
 
+    /// Whether to allow parallel tool calls.
+    ///
+    /// When `true`, the model may call multiple tools in a single response.
+    /// Default is `true` for most providers.
+    public var parallelToolCalls: Bool?
+
+    // MARK: - Response Format
+
+    /// Response format for structured output.
+    ///
+    /// Controls whether the model returns plain text, JSON, or schema-validated JSON.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.responseFormat(.jsonObject)
+    /// ```
+    public var responseFormat: ResponseFormat?
+
+    // MARK: - Reasoning
+
+    /// Configuration for extended thinking/reasoning mode.
+    ///
+    /// When set, enables the model to perform extended reasoning before responding.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.reasoning(.high)
+    /// ```
+    public var reasoning: ReasoningConfig?
+
     // MARK: - Initialization
 
     /// Creates a generation configuration with the specified parameters.
@@ -224,6 +254,9 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
     ///   - serviceTier: Service tier for capacity management (default: nil).
     ///   - tools: Tools available for the model to use (default: []).
     ///   - toolChoice: How the model should choose tools (default: .auto).
+    ///   - parallelToolCalls: Whether to allow parallel tool calls (default: nil).
+    ///   - responseFormat: Response format for structured output (default: nil).
+    ///   - reasoning: Configuration for reasoning mode (default: nil).
     public init(
         maxTokens: Int? = 1024,
         minTokens: Int? = nil,
@@ -240,7 +273,10 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
         userId: String? = nil,
         serviceTier: ServiceTier? = nil,
         tools: [ToolDefinition] = [],
-        toolChoice: ToolChoice = .auto
+        toolChoice: ToolChoice = .auto,
+        parallelToolCalls: Bool? = nil,
+        responseFormat: ResponseFormat? = nil,
+        reasoning: ReasoningConfig? = nil
     ) {
         self.maxTokens = maxTokens
         self.minTokens = minTokens
@@ -258,6 +294,9 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
         self.serviceTier = serviceTier
         self.tools = tools
         self.toolChoice = toolChoice
+        self.parallelToolCalls = parallelToolCalls
+        self.responseFormat = responseFormat
+        self.reasoning = reasoning
     }
 
     // MARK: - Static Presets
@@ -603,6 +642,68 @@ extension GenerateConfig {
         copy.toolChoice = choice
         return copy
     }
+
+    /// Returns a copy with the specified parallel tool calls setting.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default
+    ///     .tools([myTool])
+    ///     .parallelToolCalls(false)
+    /// ```
+    ///
+    /// - Parameter enabled: Whether to allow parallel tool calls.
+    /// - Returns: A new configuration with the updated setting.
+    public func parallelToolCalls(_ enabled: Bool) -> GenerateConfig {
+        var copy = self
+        copy.parallelToolCalls = enabled
+        return copy
+    }
+
+    /// Returns a copy with the specified response format.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.responseFormat(.jsonObject)
+    /// ```
+    ///
+    /// - Parameter format: The response format to use.
+    /// - Returns: A new configuration with the updated format.
+    public func responseFormat(_ format: ResponseFormat) -> GenerateConfig {
+        var copy = self
+        copy.responseFormat = format
+        return copy
+    }
+
+    /// Returns a copy with the specified reasoning configuration.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.reasoning(.high)
+    /// ```
+    ///
+    /// - Parameter config: The reasoning configuration.
+    /// - Returns: A new configuration with reasoning enabled.
+    public func reasoning(_ config: ReasoningConfig) -> GenerateConfig {
+        var copy = self
+        copy.reasoning = config
+        return copy
+    }
+
+    /// Returns a copy with reasoning enabled at the specified effort level.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.reasoning(.high)
+    /// ```
+    ///
+    /// - Parameter effort: The reasoning effort level.
+    /// - Returns: A new configuration with reasoning enabled.
+    public func reasoning(_ effort: ReasoningEffort) -> GenerateConfig {
+        var copy = self
+        copy.reasoning = ReasoningConfig(effort: effort)
+        return copy
+    }
 }
 
 // MARK: - ToolDefinition
@@ -740,4 +841,260 @@ public enum ServiceTier: String, Sendable, Hashable, Codable {
     /// This may result in slower response times during high load
     /// but ensures consistent behavior.
     case standardOnly = "standard_only"
+}
+
+// MARK: - ResponseFormat
+
+/// Response format options for structured output.
+///
+/// Controls the format of the model's response, enabling JSON mode
+/// or strict JSON schema validation.
+///
+/// ## Usage
+/// ```swift
+/// // JSON object mode (flexible JSON)
+/// let config = GenerateConfig.default.responseFormat(.jsonObject)
+///
+/// // JSON schema mode (strict validation)
+/// let schema = Schema.object(
+///     name: "User",
+///     description: nil,
+///     properties: ["name": .init(schema: .string(constraints: []), description: nil)]
+/// )
+/// let config = GenerateConfig.default.responseFormat(.jsonSchema(name: "User", schema: schema))
+/// ```
+///
+/// ## Provider Support
+/// - **OpenAI/OpenRouter**: Full support for all modes
+/// - **Anthropic**: Use `@Generable` macro instead
+public enum ResponseFormat: Sendable, Hashable, Codable {
+
+    /// Plain text output (default).
+    ///
+    /// No special formatting applied. The model returns natural text.
+    case text
+
+    /// JSON object mode.
+    ///
+    /// The model is instructed to return valid JSON. The structure
+    /// is flexible and determined by the prompt.
+    case jsonObject
+
+    /// JSON schema mode with strict validation.
+    ///
+    /// The model must return JSON conforming to the provided schema.
+    /// This enables reliable structured output parsing.
+    ///
+    /// - Parameters:
+    ///   - name: A name for the schema (required by some providers).
+    ///   - schema: The JSON Schema defining the expected structure.
+    case jsonSchema(name: String, schema: Schema)
+
+    // MARK: - Codable
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case name
+        case schema
+    }
+
+    private enum FormatType: String, Codable {
+        case text
+        case jsonObject = "json_object"
+        case jsonSchema = "json_schema"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text:
+            try container.encode(FormatType.text, forKey: .type)
+        case .jsonObject:
+            try container.encode(FormatType.jsonObject, forKey: .type)
+        case .jsonSchema(let name, let schema):
+            try container.encode(FormatType.jsonSchema, forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(schema, forKey: .schema)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(FormatType.self, forKey: .type)
+        switch type {
+        case .text:
+            self = .text
+        case .jsonObject:
+            self = .jsonObject
+        case .jsonSchema:
+            let name = try container.decode(String.self, forKey: .name)
+            let schema = try container.decode(Schema.self, forKey: .schema)
+            self = .jsonSchema(name: name, schema: schema)
+        }
+    }
+}
+
+// MARK: - ReasoningEffort
+
+/// Reasoning effort levels for extended thinking.
+///
+/// Controls how much computational effort the model spends on
+/// internal reasoning before responding.
+///
+/// ## Usage
+/// ```swift
+/// let config = GenerateConfig.default.reasoning(.high)
+/// ```
+///
+/// ## Provider Support
+/// - **OpenRouter**: Supported for Claude 3.7 Sonnet :thinking and o1 models
+/// - **Anthropic**: Use `ThinkingConfig` instead
+public enum ReasoningEffort: String, Sendable, Hashable, Codable, CaseIterable {
+    /// Extra high effort - maximum reasoning time.
+    case xhigh
+    /// High effort - extensive reasoning.
+    case high
+    /// Medium effort - balanced reasoning.
+    case medium
+    /// Low effort - light reasoning.
+    case low
+    /// Minimal effort - very brief reasoning.
+    case minimal
+    /// No reasoning - standard generation.
+    case none
+}
+
+// MARK: - ReasoningConfig
+
+/// Configuration for extended thinking/reasoning mode.
+///
+/// Enables models to perform extended reasoning before responding,
+/// potentially improving quality for complex tasks.
+///
+/// ## Usage
+/// ```swift
+/// // Simple effort-based config
+/// let config = GenerateConfig.default.reasoning(.high)
+///
+/// // Detailed config with token budget
+/// let reasoningConfig = ReasoningConfig(effort: .high, maxTokens: 2000)
+/// let config = GenerateConfig.default.reasoning(reasoningConfig)
+///
+/// // Hide reasoning from response
+/// let config = GenerateConfig.default.reasoning(ReasoningConfig(effort: .high, exclude: true))
+/// ```
+///
+/// ## API Format
+/// ```json
+/// {
+///   "reasoning": {
+///     "effort": "high",
+///     "max_tokens": 2000,
+///     "exclude": false
+///   }
+/// }
+/// ```
+public struct ReasoningConfig: Sendable, Hashable, Codable {
+
+    /// Reasoning effort level.
+    ///
+    /// Controls how much computational effort is spent on reasoning.
+    public var effort: ReasoningEffort?
+
+    /// Maximum tokens for reasoning.
+    ///
+    /// Directly allocates a token budget for reasoning. Alternative to effort.
+    public var maxTokens: Int?
+
+    /// Whether to exclude reasoning from the response.
+    ///
+    /// When `true`, reasoning details are not included in the response.
+    public var exclude: Bool?
+
+    /// Whether reasoning is enabled.
+    ///
+    /// Used by some models (like o1) that use a simple enabled flag.
+    public var enabled: Bool?
+
+    // MARK: - Initialization
+
+    /// Creates a reasoning configuration.
+    ///
+    /// - Parameters:
+    ///   - effort: Reasoning effort level.
+    ///   - maxTokens: Maximum tokens for reasoning.
+    ///   - exclude: Whether to exclude reasoning from response.
+    ///   - enabled: Whether reasoning is enabled.
+    public init(
+        effort: ReasoningEffort? = nil,
+        maxTokens: Int? = nil,
+        exclude: Bool? = nil,
+        enabled: Bool? = nil
+    ) {
+        self.effort = effort
+        self.maxTokens = maxTokens
+        self.exclude = exclude
+        self.enabled = enabled
+    }
+
+    // MARK: - Codable
+
+    private enum CodingKeys: String, CodingKey {
+        case effort
+        case maxTokens = "max_tokens"
+        case exclude
+        case enabled
+    }
+}
+
+// MARK: - ReasoningDetail
+
+/// A reasoning block from the model's extended thinking.
+///
+/// Represents one segment of the model's reasoning process.
+///
+/// ## Types
+/// - `reasoning.text`: Human-readable reasoning content
+/// - `reasoning.summary`: Summary of the reasoning process
+/// - `reasoning.encrypted`: Encrypted reasoning (provider-specific)
+public struct ReasoningDetail: Sendable, Hashable, Codable {
+
+    /// Unique identifier for this reasoning block.
+    public let id: String
+
+    /// The type of reasoning block.
+    ///
+    /// Common values:
+    /// - `"reasoning.text"`: Plain text reasoning
+    /// - `"reasoning.summary"`: Summary block
+    /// - `"reasoning.encrypted"`: Encrypted content
+    public let type: String
+
+    /// The format of the reasoning content.
+    ///
+    /// Example: `"anthropic-claude-v1"`
+    public let format: String
+
+    /// Index of this block in the reasoning sequence.
+    public let index: Int
+
+    /// The reasoning content (if available).
+    ///
+    /// May be `nil` for encrypted blocks.
+    public let content: String?
+
+    /// Creates a reasoning detail.
+    public init(
+        id: String,
+        type: String,
+        format: String,
+        index: Int,
+        content: String?
+    ) {
+        self.id = id
+        self.type = type
+        self.format = format
+        self.index = index
+        self.content = content
+    }
 }

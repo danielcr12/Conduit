@@ -286,10 +286,17 @@ public enum RetryableErrorType: String, Sendable, Hashable, CaseIterable {
             return .connectionLost
         case .dnsLookupFailed, .cannotFindHost:
             return .dnsFailure
-        case .secureConnectionFailed, .serverCertificateHasBadDate,
-             .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
-             .serverCertificateNotYetValid, .clientCertificateRejected:
+        case .secureConnectionFailed:
             return .sslError
+        // SSL certificate errors should NOT be retried - they indicate certificate/trust issues
+        // that require user intervention or configuration changes
+        case .serverCertificateUntrusted,
+             .serverCertificateHasBadDate,
+             .serverCertificateNotYetValid,
+             .serverCertificateHasUnknownRoot,
+             .clientCertificateRejected,
+             .clientCertificateRequired:
+            return nil  // Not retryable - security issue
         default:
             return nil
         }

@@ -33,7 +33,7 @@ import Foundation
 ///
 /// ### Level 3: Expert (Full Control)
 /// ```swift
-/// let config = AnthropicConfiguration(
+/// let config = try AnthropicConfiguration(
 ///     authentication: .apiKey("sk-ant-..."),
 ///     timeout: 120,
 ///     maxRetries: 5,
@@ -171,7 +171,7 @@ public actor AnthropicProvider: AIProvider, TextGenerator {
     ///
     /// ## Usage
     /// ```swift
-    /// let config = AnthropicConfiguration(
+    /// let config = try AnthropicConfiguration(
     ///     authentication: .apiKey("sk-ant-..."),
     ///     timeout: 120,
     ///     maxRetries: 5,

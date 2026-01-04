@@ -1,50 +1,6 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 import CompilerPluginSupport
-import Foundation
-
-// MARK: - Linux Compatibility
-//
-// To build on Linux, set the CONDUIT_LINUX environment variable:
-//
-//   CONDUIT_LINUX=1 swift build
-//
-// This excludes MLX dependencies which require Metal (Apple-only).
-// On Linux, use cloud providers (Anthropic, OpenAI, HuggingFace) or
-// local inference via Ollama through the OpenAI provider.
-//
-// IMPORTANT: The environment variable is evaluated at package resolution time.
-// If you switch between Linux and Darwin builds, run:
-//
-//   swift package reset
-//
-// This clears cached dependency resolution and ensures correct dependencies.
-
-let excludeMLX = ProcessInfo.processInfo.environment["CONDUIT_LINUX"] != nil
-
-// MARK: - MLX Dependencies (Apple Silicon Only)
-
-let mlxDependencies: [Package.Dependency] = excludeMLX ? [] : [
-    .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.29.1"),
-    .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "2.29.2"),
-    .package(url: "https://github.com/ml-explore/mlx-swift-examples.git", revision: "fc3afc7cdbc4b6120d210c4c58c6b132ce346775"),
-]
-
-let mlxTargetDependencies: [Target.Dependency] = excludeMLX ? [] : [
-    .product(name: "MLX", package: "mlx-swift"),
-    .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-    .product(name: "MLXLLM", package: "mlx-swift-lm"),
-    .product(name: "MLXVLM", package: "mlx-swift-lm"),
-    .product(name: "StableDiffusion", package: "mlx-swift-examples"),
-]
-
-// MARK: - Cross-Platform Dependencies
-
-let crossPlatformDependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.5.0"),
-    .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
-    .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0"),
-]
 
 // MARK: - Package Definition
 
@@ -61,7 +17,25 @@ let package = Package(
             targets: ["Conduit"]
         ),
     ],
-    dependencies: crossPlatformDependencies + mlxDependencies,
+    traits: [
+        .trait(
+            name: "MLX",
+            description: "Enable MLX on-device inference (Apple Silicon only)"
+        ),
+        .default(enabledTraits: []),
+    ],
+    dependencies: [
+        // MARK: Cross-Platform Dependencies
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.5.0"),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
+
+        // MARK: MLX Dependencies (Apple Silicon Only)
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.29.1"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "2.29.2"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-examples.git", revision: "fc3afc7cdbc4b6120d210c4c58c6b132ce346775"),
+    ],
     targets: [
         .macro(
             name: "ConduitMacros",
@@ -79,7 +53,14 @@ let package = Package(
                 "ConduitMacros",
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
-            ] + mlxTargetDependencies,
+                .product(name: "Logging", package: "swift-log"),
+                // MLX dependencies (only included when MLX trait is enabled)
+                .product(name: "MLX", package: "mlx-swift", condition: .when(traits: ["MLX"])),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm", condition: .when(traits: ["MLX"])),
+                .product(name: "MLXLLM", package: "mlx-swift-lm", condition: .when(traits: ["MLX"])),
+                .product(name: "MLXVLM", package: "mlx-swift-lm", condition: .when(traits: ["MLX"])),
+                .product(name: "StableDiffusion", package: "mlx-swift-examples", condition: .when(traits: ["MLX"])),
+            ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]

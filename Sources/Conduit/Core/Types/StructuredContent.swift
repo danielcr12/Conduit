@@ -267,6 +267,25 @@ public struct StructuredContent: Sendable, Equatable, Hashable {
         StructuredContent(kind: .object(properties))
     }
 
+    /// Creates StructuredContent from a dictionary.
+    ///
+    /// Useful for converting parsed JSON dictionaries (like tool arguments)
+    /// into the StructuredContent type.
+    ///
+    /// ## Example
+    /// ```swift
+    /// let dict: [String: Any] = ["name": "Swift", "version": 6.0]
+    /// let content = try StructuredContent.from(dictionary: dict)
+    /// ```
+    ///
+    /// - Parameter dictionary: A dictionary with String keys and Any values.
+    /// - Returns: A StructuredContent representing the dictionary.
+    /// - Throws: `StructuredContentError.invalidJSON` if the dictionary cannot be serialized to JSON.
+    public static func from(dictionary: [String: Any]) throws -> StructuredContent {
+        let data = try JSONSerialization.data(withJSONObject: dictionary)
+        return try StructuredContent(data: data)
+    }
+
     // MARK: - Type-Safe Accessors
 
     /// Whether this content is null.

@@ -53,6 +53,16 @@ struct MockTool: AITool {
     func call(arguments: Arguments) async throws -> String {
         return "Result: \(arguments.input)"
     }
+
+    // Custom implementation to avoid protocol extension type resolution issue
+    func call(_ data: Data) async throws -> any PromptRepresentable {
+        guard let jsonString = String(data: data, encoding: .utf8) else {
+            throw AIToolError.invalidArgumentEncoding
+        }
+        let content = try StructuredContent(json: jsonString)
+        let arguments = try Arguments(from: content)
+        return try await call(arguments: arguments)
+    }
 }
 
 /// A second mock tool for testing multiple tool registration.
@@ -98,6 +108,77 @@ struct AnotherMockTool: AITool {
 
     func call(arguments: Arguments) async throws -> String {
         return "Value doubled: \(arguments.value * 2)"
+    }
+
+    // Custom implementation to avoid protocol extension type resolution issue
+    func call(_ data: Data) async throws -> any PromptRepresentable {
+        guard let jsonString = String(data: data, encoding: .utf8) else {
+            throw AIToolError.invalidArgumentEncoding
+        }
+        let content = try StructuredContent(json: jsonString)
+        let arguments = try Arguments(from: content)
+        return try await call(arguments: arguments)
+    }
+}
+
+/// A mock tool that always throws for testing error wrapping.
+struct ThrowingMockTool: AITool {
+    struct Arguments: Generable {
+        let message: String
+
+        static var schema: Schema {
+            .object(
+                name: "ThrowingMockToolArguments",
+                description: "Arguments for throwing mock tool",
+                properties: [
+                    "message": Schema.Property(
+                        schema: .string(constraints: []),
+                        description: "A message",
+                        isRequired: true
+                    )
+                ]
+            )
+        }
+
+        typealias Partial = Arguments
+
+        var generableContent: StructuredContent {
+            .object(["message": .string(message)])
+        }
+
+        init(from structuredContent: StructuredContent) throws {
+            let obj = try structuredContent.object
+            guard let messageContent = obj["message"] else {
+                throw StructuredContentError.missingKey("message")
+            }
+            self.message = try messageContent.string
+        }
+
+        init(message: String) {
+            self.message = message
+        }
+    }
+
+    struct AlwaysFailsError: Error, LocalizedError {
+        var errorDescription: String? { "Always fails" }
+    }
+
+    let name = "throwing_mock_tool"
+    let description = "A tool that always throws"
+
+    func call(arguments: Arguments) async throws -> String {
+        throw AlwaysFailsError()
+    }
+
+    // Custom implementation to avoid default protocol extension issue
+    func call(_ data: Data) async throws -> any PromptRepresentable {
+        guard let jsonString = String(data: data, encoding: .utf8) else {
+            throw AIToolError.invalidArgumentEncoding
+        }
+
+        let content = try StructuredContent(json: jsonString)
+        let arguments = try Arguments(from: content)
+        return try await call(arguments: arguments)
     }
 }
 
@@ -590,22 +671,57 @@ struct AIToolExecutorTests {
 
         @Test("AIToolError.executionFailed wraps underlying error")
         func executionFailedWrapsUnderlyingError() async throws {
+            // Test step-by-step argument creation
+            let jsonString = #"{"message": "test"}"#
+
+            // Step 1: Parse JSON to StructuredContent
+            let content = try StructuredContent(json: jsonString)
+            let obj = try content.object
+            #expect(obj["message"] != nil)
+
+            // Step 2: Create Arguments directly
+            let args = try ThrowingMockTool.Arguments(from: content)
+            #expect(args.message == "test")
+
+            // Step 3: Test tool.call(arguments:) directly
+            let tool = ThrowingMockTool()
+            do {
+                _ = try await tool.call(arguments: args)
+                Issue.record("Expected AlwaysFailsError from call(arguments:)")
+            } catch is ThrowingMockTool.AlwaysFailsError {
+                // Expected
+            }
+
+            // Step 4: Test tool.call(data:) - this is where the issue was
+            let testData = jsonString.data(using: .utf8)!
+            do {
+                _ = try await tool.call(testData)
+                Issue.record("Expected AlwaysFailsError from call(data:)")
+            } catch is ThrowingMockTool.AlwaysFailsError {
+                // Expected - means argument parsing worked
+            } catch let error as AIToolError {
+                Issue.record("Got AIToolError from call(data:): \(error)")
+            } catch {
+                Issue.record("Got unexpected error from call(data:): \(error)")
+            }
+
+            // Now test through the executor
             let executor = AIToolExecutor()
-            await executor.register(FailingTool())
+            await executor.register(ThrowingMockTool())
 
             let toolCall = try AIToolCall(
                 id: "call_1",
-                toolName: "failing_tool",
-                argumentsJSON: #"{"shouldFail": true}"#
+                toolName: "throwing_mock_tool",
+                argumentsJSON: jsonString
             )
 
             do {
                 _ = try await executor.execute(toolCall: toolCall)
                 Issue.record("Expected executionFailed error")
             } catch let error as AIToolError {
-                if case .executionFailed(let tool, let underlying) = error {
-                    #expect(tool == "failing_tool")
-                    #expect(underlying.localizedDescription.contains("Intentional test failure"))
+                if case .executionFailed(let toolName, let underlying) = error {
+                    #expect(toolName == "throwing_mock_tool")
+                    #expect(underlying.localizedDescription.contains("Always fails"))
                 } else {
                     Issue.record("Expected executionFailed error, got: \(error)")
                 }

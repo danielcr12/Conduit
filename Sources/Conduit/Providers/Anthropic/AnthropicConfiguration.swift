@@ -30,7 +30,7 @@ import Foundation
 ///
 /// ### Level 3: Expert (Full Control)
 /// ```swift
-/// let config = AnthropicConfiguration(
+/// let config = try AnthropicConfiguration(
 ///     authentication: .apiKey("sk-ant-..."),
 ///     timeout: 120,
 ///     maxRetries: 5,
@@ -133,6 +133,9 @@ public struct AnthropicConfiguration: Sendable, Hashable, Codable {
     ///   - supportsStreaming: Enable streaming support. Default: `true`
     ///   - supportsVision: Enable vision support. Default: `true`
     ///   - supportsExtendedThinking: Enable extended thinking. Default: `true`
+    ///
+    /// - Throws: `AIError.invalidInput` if the base URL does not use HTTPS
+    ///   (localhost URLs are exempt for development purposes).
     public init(
         authentication: AnthropicAuthentication = .auto,
         baseURL: URL = URL(string: "https://api.anthropic.com")!,
@@ -142,7 +145,8 @@ public struct AnthropicConfiguration: Sendable, Hashable, Codable {
         supportsStreaming: Bool = true,
         supportsVision: Bool = true,
         supportsExtendedThinking: Bool = true
-    ) {
+    ) throws {
+        try Self.validateSecureURL(baseURL)
         self.authentication = authentication
         self.baseURL = baseURL
         self.apiVersion = apiVersion
@@ -151,6 +155,30 @@ public struct AnthropicConfiguration: Sendable, Hashable, Codable {
         self.supportsStreaming = supportsStreaming
         self.supportsVision = supportsVision
         self.supportsExtendedThinking = supportsExtendedThinking
+    }
+
+    // MARK: - URL Validation
+
+    /// Validates that a URL uses HTTPS for security.
+    ///
+    /// All API requests should use HTTPS to protect API keys and data in transit.
+    /// Localhost URLs are exempt for development and testing purposes.
+    ///
+    /// - Parameter url: The URL to validate.
+    /// - Throws: `AIError.invalidInput` if the URL does not use HTTPS
+    ///   and is not a localhost address.
+    private static func validateSecureURL(_ url: URL) throws {
+        let scheme = url.scheme?.lowercased()
+        let host = url.host?.lowercased() ?? ""
+
+        // Allow localhost for development
+        let isLocalhost = host == "localhost" || host == "127.0.0.1" || host == "::1"
+
+        guard scheme == "https" || isLocalhost else {
+            throw AIError.invalidInput(
+                "Base URL must use HTTPS for security. Got: \(url.absoluteString)"
+            )
+        }
     }
 
     // MARK: - Static Factories
@@ -162,7 +190,8 @@ public struct AnthropicConfiguration: Sendable, Hashable, Codable {
     /// - Parameter apiKey: Your Anthropic API key (starts with "sk-ant-").
     /// - Returns: A standard configuration with the specified API key.
     public static func standard(apiKey: String) -> AnthropicConfiguration {
-        AnthropicConfiguration(
+        // swiftlint:disable:next force_try
+        try! AnthropicConfiguration(
             authentication: .apiKey(apiKey)
         )
     }
@@ -224,9 +253,11 @@ extension AnthropicConfiguration {
 
     /// Returns a copy with the specified base URL.
     ///
-    /// - Parameter url: The base URL.
+    /// - Parameter url: The base URL. Must use HTTPS (localhost exempt for development).
     /// - Returns: A new configuration with the updated URL.
-    public func baseURL(_ url: URL) -> AnthropicConfiguration {
+    /// - Throws: `AIError.invalidInput` if the URL does not use HTTPS.
+    public func baseURL(_ url: URL) throws -> AnthropicConfiguration {
+        try Self.validateSecureURL(url)
         var copy = self
         copy.baseURL = url
         return copy

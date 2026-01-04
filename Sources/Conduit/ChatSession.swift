@@ -370,6 +370,10 @@ where Provider.ModelID == ModelIdentifier {
         }
     }
 
+    deinit {
+        generationTask?.cancel()
+    }
+
     // MARK: - Thread-Safe State Access
 
     /// Executes a closure with the lock held.
@@ -633,8 +637,9 @@ where Provider.ModelID == ModelIdentifier {
                 if case .cancelled = termination {
                     task.cancel()
                 }
-                self?.withLock {
-                    self?.generationTask = nil
+                guard let strongSelf = self else { return }
+                strongSelf.withLock {
+                    strongSelf.generationTask = nil
                 }
             }
         }

@@ -110,6 +110,11 @@ extension AnthropicProvider {
                                 text: nil,
                                 source: source
                             ))
+
+                        case .audio:
+                            // Audio not supported by Anthropic API - skip silently
+                            // Use OpenAI/OpenRouter for audio input
+                            break
                         }
                     }
 
@@ -400,7 +405,8 @@ extension AnthropicProvider {
                     let waitTime: TimeInterval
                     if statusCode == 429, let retryAfter = rateLimitInfo.retryAfter {
                         // Use Retry-After header for rate limits
-                        waitTime = retryAfter
+                        // Cap at 5 minutes to prevent DoS via excessive wait times
+                        waitTime = min(retryAfter, 300)
                     } else {
                         // Exponential backoff: 1s, 2s, 4s, 8s...
                         waitTime = pow(2.0, Double(attempt))
@@ -573,15 +579,15 @@ extension AnthropicProvider {
     ///
     /// This method transforms Anthropic's response format into Conduit's
     /// unified `GenerationResult` structure, extracting text content,
-    /// calculating performance metrics, and mapping metadata fields.
+    /// tool calls, calculating performance metrics, and mapping metadata fields.
     ///
     /// ## Content Extraction
     ///
     /// Anthropic responses contain a `content` array with multiple content blocks.
     /// This method:
     /// 1. Separates thinking blocks from text blocks
-    /// 2. Filters for text blocks (ignores thinking, tool_use, and other block types)
-    /// 3. Concatenates all text blocks into a single string
+    /// 2. Extracts text blocks and concatenates them into a single string
+    /// 3. Extracts tool_use blocks into `AIToolCall` objects
     /// 4. Returns empty string if no text blocks are present
     ///
     /// ## Extended Thinking
@@ -610,6 +616,15 @@ extension AnthropicProvider {
     /// When provided, the `rateLimitInfo` parameter is included in the result,
     /// allowing callers to monitor API usage and implement request pacing.
     ///
+    /// ## Tool Calls
+    ///
+    /// When the model requests tool invocations (type="tool_use"), these are
+    /// extracted into `AIToolCall` objects and included in the result's `toolCalls`
+    /// array. Each tool call contains:
+    /// - `id`: Unique identifier for the call (required for multi-turn)
+    /// - `toolName`: Name of the tool to invoke
+    /// - `arguments`: Parsed arguments as `StructuredContent`
+    ///
     /// ## Finish Reason Mapping
     ///
     /// Delegates to `mapStopReason()` to convert Anthropic's `stop_reason`
@@ -619,10 +634,14 @@ extension AnthropicProvider {
     /// ```swift
     /// let startTime = Date()
     /// let (response, rateLimitInfo) = try await executeRequest(request)
-    /// let result = convertToGenerationResult(response, startTime: startTime, rateLimitInfo: rateLimitInfo)
+    /// let result = try convertToGenerationResult(response, startTime: startTime, rateLimitInfo: rateLimitInfo)
     /// print(result.text)
     /// print("Speed: \(result.tokensPerSecond) tok/s")
-    /// print("Remaining requests: \(result.rateLimitInfo?.remainingRequests ?? 0)")
+    /// if result.hasToolCalls {
+    ///     for call in result.toolCalls {
+    ///         print("Tool call: \(call.toolName)")
+    ///     }
+    /// }
     /// ```
     ///
     /// - Parameters:
@@ -630,7 +649,9 @@ extension AnthropicProvider {
     ///   - startTime: The timestamp when generation started (for performance metrics).
     ///   - rateLimitInfo: Optional rate limit information extracted from HTTP response headers.
     ///
-    /// - Returns: A `GenerationResult` containing the generated text, metadata, and rate limit info.
+    /// - Returns: A `GenerationResult` containing the generated text, tool calls, metadata, and rate limit info.
+    ///
+    /// - Throws: `AIError.generationFailed` if tool call arguments cannot be parsed.
     ///
     /// - Note: The `logprobs` field is always `nil` because Anthropic's API does
     ///   not provide log probabilities for generated tokens.
@@ -639,13 +660,38 @@ extension AnthropicProvider {
         startTime: Date,
         rateLimitInfo: RateLimitInfo? = nil
     ) throws -> GenerationResult {
-        // Extract text blocks for the final response
+        // Extract text content and tool calls from content blocks
         // Note: Thinking blocks (type="thinking") contain internal reasoning
         // and are filtered out, as they are not part of the user-facing response
-        let responseText = response.content
-            .filter { $0.type == "text" }
-            .compactMap { $0.text }
-            .joined()
+        var textContent = ""
+        var toolCalls: [AIToolCall] = []
+
+        for block in response.content {
+            switch block.type {
+            case "text":
+                if let text = block.text {
+                    textContent += text
+                }
+            case "tool_use":
+                if let id = block.id, let name = block.name {
+                    // Convert input dict to StructuredContent
+                    let inputDict = block.input ?? [:]
+                    let anyDict = inputDict.mapValues { $0.anyValue }
+                    let arguments = try StructuredContent.from(dictionary: anyDict)
+                    let toolCall = try AIToolCall(
+                        id: id,
+                        toolName: name,
+                        arguments: arguments
+                    )
+                    toolCalls.append(toolCall)
+                }
+            default:
+                // Skip thinking blocks and other types
+                break
+            }
+        }
+
+        let responseText = textContent
 
         // Issue 12.8: Validate non-empty response
         // Allow empty text if stop_reason is "tool_use" since tool calls may not have text content
@@ -675,7 +721,8 @@ extension AnthropicProvider {
                 promptTokens: response.usage.inputTokens,
                 completionTokens: response.usage.outputTokens
             ),
-            rateLimitInfo: rateLimitInfo
+            rateLimitInfo: rateLimitInfo,
+            toolCalls: toolCalls
         )
     }
 
