@@ -120,7 +120,7 @@ struct LinuxCompatibilityTests {
 
     // MARK: - MLX Availability
 
-    #if !canImport(MLX)
+    #if os(Linux)
     @Test("MLX provider unavailable on non-Apple platforms")
     func mlxUnavailableOnLinux() async {
         // On Linux/non-MLX platforms, the MLX provider should not be available

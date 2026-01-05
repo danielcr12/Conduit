@@ -45,7 +45,8 @@ public enum JsonRepair {
     /// - Parameter json: The potentially incomplete JSON string
     /// - Returns: A repaired JSON string that should be valid JSON
     public static func repair(_ json: String) -> String {
-        guard !json.isEmpty else { return "{}" }
+        let trimmed = json.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "{}" }
 
         // Pre-allocate result string with margin for closing brackets
         var resultBuilder = ""
@@ -61,14 +62,11 @@ public enum JsonRepair {
 
         // If we're in a string, close it
         if state.inString {
-            if state.escapeNext {
-                // Check if we're in the middle of a unicode escape (\uXXXX)
-                // Remove the incomplete escape gracefully
-                while let last = resultBuilder.last,
-                      last == "\\" || isPartialUnicodeEscape(resultBuilder) {
-                    resultBuilder.removeLast()
-                    if last == "\\" { break }
-                }
+            // Check for partial unicode escape sequence and remove it
+            removePartialUnicodeEscape(&resultBuilder)
+            // Also handle incomplete escape at the very end
+            if state.escapeNext, let last = resultBuilder.last, last == "\\" {
+                resultBuilder.removeLast()
             }
             resultBuilder.append("\"")
         }
@@ -81,10 +79,23 @@ public enum JsonRepair {
             resultBuilder.removeLast()
         }
 
+        // Remove incomplete key-value pairs (key without value, key without colon)
+        resultBuilder = removeIncompleteKeyValuePairs(resultBuilder)
+
         // Close any open brackets/braces
         for bracket in state.bracketStack.reversed() {
+            // Before adding a closing bracket, remove any trailing comma
+            while let last = resultBuilder.last, last.isWhitespace {
+                resultBuilder.removeLast()
+            }
+            if resultBuilder.last == "," {
+                resultBuilder.removeLast()
+            }
             resultBuilder.append(bracket.closing)
         }
+
+        // Final pass: remove trailing commas before existing closing brackets
+        resultBuilder = removeTrailingCommasBeforeClosingBrackets(resultBuilder)
 
         return resultBuilder
     }
@@ -106,6 +117,268 @@ public enum JsonRepair {
             }
         }
         return false
+    }
+
+    /// Removes a partial unicode escape sequence from the end of a string.
+    private static func removePartialUnicodeEscape(_ str: inout String) {
+        // Look for patterns like \u, \u1, \u12, \u123 at the end
+        guard str.count >= 2 else { return }
+
+        // Find the last backslash in the final 6 characters
+        let searchRange = str.suffix(6)
+        guard let backslashIdx = searchRange.lastIndex(of: "\\") else { return }
+
+        let afterBackslash = str[str.index(after: backslashIdx)...]
+
+        // Check if it's a unicode escape (\uXXXX)
+        if afterBackslash.hasPrefix("u") {
+            let hexPart = afterBackslash.dropFirst()
+            let hexCount = hexPart.prefix(while: { $0.isHexDigit }).count
+
+            // If incomplete (less than 4 hex digits), remove the whole escape
+            if hexCount < 4 {
+                str.removeSubrange(backslashIdx...)
+            }
+        }
+    }
+
+    /// Removes incomplete key-value pairs from the end of JSON (only in object context).
+    /// Handles cases like: {"key" (no colon/value), {"key": (no value), {"key": 30, " (incomplete key)
+    private static func removeIncompleteKeyValuePairs(_ json: String) -> String {
+        var result = json
+
+        // Trim trailing whitespace
+        while let last = result.last, last.isWhitespace {
+            result.removeLast()
+        }
+
+        // Pattern: ends with comma followed by incomplete key or nothing
+        // e.g., {"a": 1, " or {"a": 1, "b
+        if result.hasSuffix(",") {
+            result.removeLast()
+            while let last = result.last, last.isWhitespace {
+                result.removeLast()
+            }
+        }
+
+        // Pattern: ends with colon (key without value) - need to remove the key too
+        // e.g., {"name": "Alice", "age":
+        if result.hasSuffix(":") {
+            result.removeLast()
+            while let last = result.last, last.isWhitespace {
+                result.removeLast()
+            }
+            // Now we should have a quoted key - remove it
+            if result.hasSuffix("\"") {
+                result.removeLast()  // Remove closing quote
+                // Find the opening quote of the key
+                while let last = result.last {
+                    if last == "\"" {
+                        result.removeLast()
+                        break
+                    }
+                    result.removeLast()
+                }
+                // Remove preceding comma and whitespace if any
+                while let last = result.last, last.isWhitespace {
+                    result.removeLast()
+                }
+                if result.last == "," {
+                    result.removeLast()
+                }
+            }
+        }
+
+        // Pattern: ends with a quoted string that looks like an incomplete key (no colon after)
+        // e.g., {"name": "Alice", "age" or {"name": "Alice", "
+        // ONLY do this in object context, not array context
+        if result.hasSuffix("\"") {
+            let chars = Array(result)
+            var idx = chars.count - 1
+
+            // Find the start of this string
+            idx -= 1  // Skip the closing quote
+            while idx >= 0 {
+                if chars[idx] == "\"" {
+                    // Check if escaped
+                    var backslashCount = 0
+                    var checkIdx = idx - 1
+                    while checkIdx >= 0 && chars[checkIdx] == "\\" {
+                        backslashCount += 1
+                        checkIdx -= 1
+                    }
+                    if backslashCount % 2 == 0 {
+                        // Found unescaped opening quote
+                        break
+                    }
+                }
+                idx -= 1
+            }
+
+            if idx >= 0 {
+                // Check what precedes this string (skip whitespace)
+                var prevIdx = idx - 1
+                while prevIdx >= 0 && chars[prevIdx].isWhitespace {
+                    prevIdx -= 1
+                }
+
+                // Only remove if preceded by { (object start) - this is definitely an incomplete key
+                // If preceded by comma, we need to check if we're in object or array context
+                if prevIdx >= 0 && chars[prevIdx] == "{" {
+                    // Remove this incomplete key (object context, key after open brace)
+                    result = String(chars[..<idx])
+                    while let last = result.last, last.isWhitespace {
+                        result.removeLast()
+                    }
+                } else if prevIdx >= 0 && chars[prevIdx] == "," {
+                    // Need to determine context - look for most recent unmatched [ or {
+                    let context = findContext(chars, upTo: prevIdx)
+                    if context == .object {
+                        // Remove this incomplete key
+                        result = String(chars[..<idx])
+                        while let last = result.last, last.isWhitespace {
+                            result.removeLast()
+                        }
+                        if result.last == "," {
+                            result.removeLast()
+                        }
+                    }
+                    // If array context, keep the string (it's a valid array element)
+                }
+            }
+        }
+
+        return result
+    }
+
+    /// Determine if we're in object or array context at a given position
+    private enum JsonContext { case object, array, unknown }
+
+    private static func findContext(_ chars: [Character], upTo idx: Int) -> JsonContext {
+        var depth = 0
+        var inString = false
+        var escapeNext = false
+
+        for i in 0...idx {
+            let char = chars[i]
+
+            if escapeNext {
+                escapeNext = false
+                continue
+            }
+
+            if inString {
+                if char == "\\" {
+                    escapeNext = true
+                } else if char == "\"" {
+                    inString = false
+                }
+                continue
+            }
+
+            switch char {
+            case "\"":
+                inString = true
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+            case "[":
+                depth += 1
+            case "]":
+                depth -= 1
+            default:
+                break
+            }
+        }
+
+        // Now scan backwards from idx to find the most recent unmatched opener
+        var bracketStack: [Character] = []
+        inString = false
+        escapeNext = false
+
+        for i in (0...idx).reversed() {
+            let char = chars[i]
+
+            // Handle string detection (simplified - scan forward to know if in string)
+            // Actually, for simplicity, let's just look for the nearest unmatched [ or {
+            if char == "]" || char == "}" {
+                bracketStack.append(char)
+            } else if char == "[" {
+                if let last = bracketStack.last, last == "]" {
+                    bracketStack.removeLast()
+                } else {
+                    return .array
+                }
+            } else if char == "{" {
+                if let last = bracketStack.last, last == "}" {
+                    bracketStack.removeLast()
+                } else {
+                    return .object
+                }
+            }
+        }
+
+        return .unknown
+    }
+
+    /// Removes trailing commas before closing brackets/braces in already-closed JSON.
+    private static func removeTrailingCommasBeforeClosingBrackets(_ json: String) -> String {
+        var result = ""
+        result.reserveCapacity(json.count)
+
+        var inString = false
+        var escapeNext = false
+        let chars = Array(json)
+        var i = 0
+
+        while i < chars.count {
+            let char = chars[i]
+
+            if escapeNext {
+                escapeNext = false
+                result.append(char)
+                i += 1
+                continue
+            }
+
+            if inString {
+                if char == "\\" {
+                    escapeNext = true
+                } else if char == "\"" {
+                    inString = false
+                }
+                result.append(char)
+                i += 1
+                continue
+            }
+
+            if char == "\"" {
+                inString = true
+                result.append(char)
+                i += 1
+                continue
+            }
+
+            // Check for trailing comma followed by optional whitespace then closing bracket
+            if char == "," {
+                // Look ahead for whitespace + closing bracket
+                var j = i + 1
+                while j < chars.count && chars[j].isWhitespace {
+                    j += 1
+                }
+                if j < chars.count && (chars[j] == "}" || chars[j] == "]") {
+                    // Skip the comma - don't add it to result
+                    i += 1
+                    continue
+                }
+            }
+
+            result.append(char)
+            i += 1
+        }
+
+        return result
     }
 
     /// Attempts to repair and parse incomplete JSON into StructuredContent.

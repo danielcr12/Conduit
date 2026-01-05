@@ -421,12 +421,37 @@ public struct StructuredContent: Sendable, Equatable, Hashable {
     /// - Returns: A compact JSON string representation.
     /// - Throws: An error if serialization fails.
     public func toJSON() throws -> String {
-        let jsonObject = toJSONObject()
-        let data = try JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys])
-        guard let string = String(data: data, encoding: .utf8) else {
-            throw StructuredContentError.invalidJSON("Unable to convert data to UTF-8 string")
+        // Handle primitive types directly since JSONSerialization requires
+        // top-level objects to be arrays or dictionaries
+        switch kind {
+        case .null:
+            return "null"
+        case .bool(let value):
+            return value ? "true" : "false"
+        case .number(let value):
+            // Use Int if the value is a whole number for cleaner output
+            if value.isFinite && value == value.rounded() && value >= Double(Int.min) && value <= Double(Int.max) {
+                return String(Int(value))
+            }
+            return String(value)
+        case .string(let value):
+            // Escape and quote the string for JSON
+            let escaped = value
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+                .replacingOccurrences(of: "\t", with: "\\t")
+            return "\"\(escaped)\""
+        case .array, .object:
+            // For arrays and objects, use JSONSerialization
+            let jsonObject = toJSONObject()
+            let data = try JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys])
+            guard let string = String(data: data, encoding: .utf8) else {
+                throw StructuredContentError.invalidJSON("Unable to convert data to UTF-8 string")
+            }
+            return string
         }
-        return string
     }
 
     /// Converts this structured content to JSON data.
@@ -440,8 +465,12 @@ public struct StructuredContent: Sendable, Equatable, Hashable {
     /// - Returns: UTF-8 encoded JSON data.
     /// - Throws: An error if serialization fails.
     public func toData() throws -> Data {
-        let jsonObject = toJSONObject()
-        return try JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys])
+        // For primitive types, convert to string first
+        let jsonString = try toJSON()
+        guard let data = jsonString.data(using: .utf8) else {
+            throw StructuredContentError.invalidJSON("Unable to convert string to UTF-8 data")
+        }
+        return data
     }
 
     // MARK: - Private Helpers
