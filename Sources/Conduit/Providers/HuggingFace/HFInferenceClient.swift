@@ -584,7 +584,7 @@ internal actor HFInferenceClient {
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         urlRequest.httpBody = try encoder.encode(body)
 
-        let (bytes, response) = try await session.bytes(for: urlRequest)
+        let (bytes, response) = try await session.asyncBytes(for: urlRequest)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AIError.networkError(URLError(.badServerResponse))

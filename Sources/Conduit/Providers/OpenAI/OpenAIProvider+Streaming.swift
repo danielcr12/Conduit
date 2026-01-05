@@ -105,8 +105,8 @@ extension OpenAIProvider {
         let body = buildRequestBody(messages: messages, model: model, config: config, stream: true)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        // Execute streaming request
-        let (bytes, response) = try await session.bytes(for: request)
+        // Execute streaming request (cross-platform)
+        let (bytes, response) = try await session.asyncBytes(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AIError.networkError(URLError(.badServerResponse))
