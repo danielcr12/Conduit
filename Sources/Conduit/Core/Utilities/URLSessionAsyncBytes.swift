@@ -209,6 +209,10 @@ extension URLSession {
     /// - Parameter request: The URL request to execute.
     /// - Returns: A tuple containing an async byte stream and the URL response.
     /// - Throws: `URLError` if the request fails.
+    ///
+    /// - Note: On Linux, this creates a new session with default configuration
+    ///   because `URLSession.configuration` is not safely reusable with
+    ///   FoundationNetworking's libcurl backend.
     public func asyncBytes(for request: URLRequest) async throws -> (URLSessionAsyncBytes, URLResponse) {
         // Create a dedicated session with delegate for streaming
         var streamContinuation: AsyncThrowingStream<UInt8, Error>.Continuation!
@@ -223,8 +227,11 @@ extension URLSession {
                 responseContinuation: responseContinuation
             )
 
+            // Use fresh default configuration instead of self.configuration
+            // to avoid libcurl errors on Linux where session configuration
+            // may not be safely accessible after creation.
             let streamingSession = URLSession(
-                configuration: self.configuration,
+                configuration: .default,
                 delegate: delegate,
                 delegateQueue: nil
             )
