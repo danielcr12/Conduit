@@ -67,6 +67,10 @@ public struct URLSessionAsyncBytes: AsyncSequence, Sendable {
 public struct AsyncLineSequence: AsyncSequence, Sendable {
     public typealias Element = String
 
+    /// Maximum buffer size in bytes (10 MB) to prevent unbounded memory growth.
+    /// If a line exceeds this size, an error will be thrown.
+    public static let maxBufferSize = 10 * 1024 * 1024
+
     private let bytes: URLSessionAsyncBytes
 
     init(bytes: URLSessionAsyncBytes) {
@@ -96,6 +100,11 @@ public struct AsyncLineSequence: AsyncSequence, Sendable {
                     let lineBytes = Array(buffer[..<lineEnd])
                     buffer.removeFirst(newlineIndex + 1)
                     return String(decoding: lineBytes, as: UTF8.self)
+                }
+
+                // Check buffer size limit before reading more bytes
+                if buffer.count >= AsyncLineSequence.maxBufferSize {
+                    throw URLError(.dataLengthExceedsMaximum)
                 }
 
                 // Read more bytes
@@ -145,11 +154,12 @@ final class StreamingDataDelegate: NSObject, URLSessionDataDelegate, @unchecked 
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         lock.lock()
-        defer { lock.unlock() }
-
         if !hasReceivedResponse {
             hasReceivedResponse = true
+            lock.unlock()
             responseContinuation.resume(returning: response)
+        } else {
+            lock.unlock()
         }
         completionHandler(.allow)
     }
@@ -165,20 +175,26 @@ final class StreamingDataDelegate: NSObject, URLSessionDataDelegate, @unchecked 
         let hadResponse = hasReceivedResponse
         if !hadResponse {
             hasReceivedResponse = true
-        }
-        lock.unlock()
+            lock.unlock()
 
-        if let error = error {
-            if !hadResponse {
+            // Resume continuation outside the lock to avoid potential deadlock
+            if let error = error {
                 responseContinuation.resume(throwing: error)
-            }
-            continuation.finish(throwing: error)
-        } else {
-            if !hadResponse {
+                continuation.finish(throwing: error)
+            } else {
                 // Edge case: completed without receiving response
                 responseContinuation.resume(throwing: URLError(.badServerResponse))
+                continuation.finish()
             }
-            continuation.finish()
+        } else {
+            lock.unlock()
+
+            // Response was already received, just finish the stream
+            if let error = error {
+                continuation.finish(throwing: error)
+            } else {
+                continuation.finish()
+            }
         }
     }
 }
@@ -269,6 +285,10 @@ public struct URLSessionAsyncBytes: AsyncSequence, Sendable {
 public struct AsyncLineSequence: AsyncSequence, Sendable {
     public typealias Element = String
 
+    /// Maximum buffer size in bytes (10 MB) to prevent unbounded memory growth.
+    /// If a line exceeds this size, an error will be thrown.
+    public static let maxBufferSize = 10 * 1024 * 1024
+
     private let bytes: URLSessionAsyncBytes
 
     init(bytes: URLSessionAsyncBytes) {
@@ -298,6 +318,11 @@ public struct AsyncLineSequence: AsyncSequence, Sendable {
                     let lineBytes = Array(buffer[..<lineEnd])
                     buffer.removeFirst(newlineIndex + 1)
                     return String(decoding: lineBytes, as: UTF8.self)
+                }
+
+                // Check buffer size limit before reading more bytes
+                if buffer.count >= AsyncLineSequence.maxBufferSize {
+                    throw URLError(.dataLengthExceedsMaximum)
                 }
 
                 // Read more bytes

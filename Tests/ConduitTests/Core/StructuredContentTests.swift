@@ -880,6 +880,71 @@ struct StructuredContentTests {
                 _ = try content.toData()
             }
         }
+
+        // MARK: - Regression Tests
+
+        @Test("Regression: Primitive types don't crash toJSON")
+        func regressionPrimitiveTypesSerialization() throws {
+            // This is a regression test for the fix where toJSON() would crash
+            // when serializing primitive types because NSJSONSerialization requires
+            // top-level objects to be arrays or dictionaries.
+
+            // Test all primitive types serialize without crashing
+            let nullContent = StructuredContent.null
+            let nullJSON = try nullContent.toJSON()
+            #expect(nullJSON == "null")
+
+            let boolContent = StructuredContent.bool(true)
+            let boolJSON = try boolContent.toJSON()
+            #expect(boolJSON == "true")
+
+            let numberContent = StructuredContent.number(42)
+            let numberJSON = try numberContent.toJSON()
+            #expect(numberJSON == "42")
+
+            let stringContent = StructuredContent.string("test")
+            let stringJSON = try stringContent.toJSON()
+            #expect(stringJSON == "\"test\"")
+
+            // Verify they can all be parsed back
+            let parsedNull = try StructuredContent(json: nullJSON)
+            #expect(parsedNull.isNull == true)
+
+            let parsedBool = try StructuredContent(json: boolJSON)
+            #expect(try parsedBool.bool == true)
+
+            let parsedNumber = try StructuredContent(json: numberJSON)
+            #expect(try parsedNumber.int == 42)
+
+            let parsedString = try StructuredContent(json: stringJSON)
+            #expect(try parsedString.string == "test")
+        }
+
+        @Test("Regression: Primitive types don't crash toData")
+        func regressionPrimitiveTypesToData() throws {
+            // This is a regression test for the fix where toData() would crash
+            // when serializing primitive types.
+
+            let nullContent = StructuredContent.null
+            let nullData = try nullContent.toData()
+            let parsedNull = try StructuredContent(data: nullData)
+            #expect(parsedNull.isNull == true)
+
+            let boolContent = StructuredContent.bool(false)
+            let boolData = try boolContent.toData()
+            let parsedBool = try StructuredContent(data: boolData)
+            #expect(try parsedBool.bool == false)
+
+            let numberContent = StructuredContent.number(123.45)
+            let numberData = try numberContent.toData()
+            let parsedNumber = try StructuredContent(data: numberData)
+            #expect(try parsedNumber.double == 123.45)
+
+            let stringContent = StructuredContent.string("hello world")
+            let stringData = try stringContent.toData()
+            let parsedString = try StructuredContent(data: stringData)
+            #expect(try parsedString.string == "hello world")
+        }
     }
 
     // MARK: - Equality and Hashing Tests
