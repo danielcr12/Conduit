@@ -101,6 +101,12 @@ public enum JsonRepair {
     }
 
     /// Checks if the string ends with a partial unicode escape sequence.
+    ///
+    /// Detects incomplete unicode escape patterns like `\u`, `\u1`, `\u12`, `\u123`
+    /// which need to be removed before closing a string to avoid invalid JSON.
+    ///
+    /// - Parameter str: The string to check
+    /// - Returns: `true` if the string ends with an incomplete `\uXXXX` escape sequence
     private static func isPartialUnicodeEscape(_ str: String) -> Bool {
         guard str.count >= 2 else { return false }
         let suffix = String(str.suffix(6))
@@ -120,6 +126,12 @@ public enum JsonRepair {
     }
 
     /// Removes a partial unicode escape sequence from the end of a string.
+    ///
+    /// This method modifies the string in-place to remove incomplete unicode escapes
+    /// like `\u`, `\u1`, `\u12`, `\u123` which would make the JSON invalid.
+    /// Complete unicode escapes (`\uXXXX` with 4 hex digits) are left intact.
+    ///
+    /// - Parameter str: The string to modify (modified in-place)
     private static func removePartialUnicodeEscape(_ str: inout String) {
         // Look for patterns like \u, \u1, \u12, \u123 at the end
         guard str.count >= 2 else { return }
@@ -143,7 +155,17 @@ public enum JsonRepair {
     }
 
     /// Removes incomplete key-value pairs from the end of JSON (only in object context).
-    /// Handles cases like: {"key" (no colon/value), {"key": (no value), {"key": 30, " (incomplete key)
+    ///
+    /// This method handles several edge cases during streaming JSON parsing:
+    /// - `{"key"` (no colon or value) → removes the incomplete key
+    /// - `{"key":` (no value) → removes both the key and colon
+    /// - `{"key": 30, "` (incomplete next key) → removes the incomplete key
+    ///
+    /// The method is context-aware and only removes incomplete keys in object contexts,
+    /// not in arrays where strings are valid values.
+    ///
+    /// - Parameter json: The JSON string to process
+    /// - Returns: JSON with incomplete key-value pairs removed
     private static func removeIncompleteKeyValuePairs(_ json: String) -> String {
         var result = json
 
@@ -251,7 +273,16 @@ public enum JsonRepair {
         return result
     }
 
-    /// Determine if we're in object or array context at a given position
+    /// Determines the JSON context (object or array) at a given position.
+    ///
+    /// This is used to decide whether a trailing string is an incomplete object key
+    /// or a valid array element. The method scans backwards from the given index to
+    /// find the most recent unmatched opening bracket (`{` or `[`).
+    ///
+    /// - Parameters:
+    ///   - chars: The JSON characters as an array
+    ///   - idx: The position to check context at
+    /// - Returns: The JSON context (`.object`, `.array`, or `.unknown`)
     private enum JsonContext { case object, array, unknown }
 
     private static func findContext(_ chars: [Character], upTo idx: Int) -> JsonContext {
@@ -323,6 +354,15 @@ public enum JsonRepair {
     }
 
     /// Removes trailing commas before closing brackets/braces in already-closed JSON.
+    ///
+    /// JSON does not allow trailing commas before closing brackets. This method
+    /// performs a final cleanup pass to remove patterns like `[1, 2, 3,]` or
+    /// `{"a": 1, "b": 2,}` which would be invalid JSON.
+    ///
+    /// The method is string-aware and only processes commas outside of quoted strings.
+    ///
+    /// - Parameter json: The JSON string to clean up
+    /// - Returns: JSON with trailing commas removed
     private static func removeTrailingCommasBeforeClosingBrackets(_ json: String) -> String {
         var result = ""
         result.reserveCapacity(json.count)
