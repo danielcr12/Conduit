@@ -4,6 +4,11 @@
 // Streaming implementation for AnthropicProvider with Server-Sent Events (SSE) parsing.
 
 import Foundation
+
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
 import Logging
 
 /// Maximum allowed size for accumulated tool call arguments (100KB).
@@ -303,10 +308,11 @@ extension AnthropicProvider {
             throw AIError.generationFailed(underlying: SendableError(error))
         }
 
-        // Execute streaming request
-        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        // Execute streaming request (cross-platform)
+        let bytes: URLSessionAsyncBytes
+        let response: URLResponse
         do {
-            (bytes, response) = try await session.bytes(for: urlRequest)
+            (bytes, response) = try await session.asyncBytes(for: urlRequest)
         } catch let urlError as URLError {
             throw AIError.networkError(urlError)
         } catch {

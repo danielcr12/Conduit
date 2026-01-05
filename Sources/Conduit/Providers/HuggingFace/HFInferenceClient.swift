@@ -3,6 +3,10 @@
 
 import Foundation
 
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
 // MARK: - Request DTOs
 
 /// Request payload for HuggingFace chat completion API.
@@ -580,7 +584,7 @@ internal actor HFInferenceClient {
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         urlRequest.httpBody = try encoder.encode(body)
 
-        let (bytes, response) = try await session.bytes(for: urlRequest)
+        let (bytes, response) = try await session.asyncBytes(for: urlRequest)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AIError.networkError(URLError(.badServerResponse))

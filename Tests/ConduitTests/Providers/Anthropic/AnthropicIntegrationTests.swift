@@ -220,7 +220,8 @@ struct AnthropicIntegrationTests {
 
     // MARK: - Error Handling Tests
 
-    @Test("Invalid API key throws authenticationFailed")
+    @Test("Invalid API key throws authenticationFailed",
+          .disabled("Requires network access - run manually with: swift test --filter invalidAPIKey"))
     func invalidAPIKey() async throws {
         let provider = AnthropicProvider(apiKey: "sk-ant-invalid-key-12345")
 
