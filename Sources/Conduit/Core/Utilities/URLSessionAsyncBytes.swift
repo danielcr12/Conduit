@@ -214,6 +214,26 @@ extension URLSession {
     ///   because `URLSession.configuration` is not safely reusable with
     ///   FoundationNetworking's libcurl backend.
     public func asyncBytes(for request: URLRequest) async throws -> (URLSessionAsyncBytes, URLResponse) {
+        // Validate URL before passing to libcurl to prevent CURLE_BAD_FUNCTION_ARGUMENT (error 43)
+        guard let url = request.url else {
+            throw URLError(.badURL, userInfo: [
+                NSLocalizedDescriptionKey: "URLRequest has nil URL"
+            ])
+        }
+
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            throw URLError(.unsupportedURL, userInfo: [
+                NSLocalizedDescriptionKey: "URL scheme must be http or https, got: \(url.scheme ?? "nil")"
+            ])
+        }
+
+        guard url.host != nil else {
+            throw URLError(.badURL, userInfo: [
+                NSLocalizedDescriptionKey: "URL must have a host component"
+            ])
+        }
+
         // Create a dedicated session with delegate for streaming
         var streamContinuation: AsyncThrowingStream<UInt8, Error>.Continuation!
 
@@ -364,6 +384,26 @@ extension URLSession {
     /// - Returns: A tuple containing the async byte stream and the URL response.
     /// - Throws: `URLError` if the request fails.
     public func asyncBytes(for request: URLRequest) async throws -> (URLSessionAsyncBytes, URLResponse) {
+        // Validate URL for consistency with Linux implementation
+        guard let url = request.url else {
+            throw URLError(.badURL, userInfo: [
+                NSLocalizedDescriptionKey: "URLRequest has nil URL"
+            ])
+        }
+
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            throw URLError(.unsupportedURL, userInfo: [
+                NSLocalizedDescriptionKey: "URL scheme must be http or https, got: \(url.scheme ?? "nil")"
+            ])
+        }
+
+        guard url.host != nil else {
+            throw URLError(.badURL, userInfo: [
+                NSLocalizedDescriptionKey: "URL must have a host component"
+            ])
+        }
+
         let (nativeBytes, response) = try await self.bytes(for: request)
         return (URLSessionAsyncBytes(nativeBytes: nativeBytes), response)
     }
