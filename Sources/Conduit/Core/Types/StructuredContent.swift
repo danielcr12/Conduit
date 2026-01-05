@@ -429,20 +429,27 @@ public struct StructuredContent: Sendable, Equatable, Hashable {
         case .bool(let value):
             return value ? "true" : "false"
         case .number(let value):
+            // Reject non-finite numbers (NaN, Infinity) as they are not valid JSON
+            guard value.isFinite else {
+                throw StructuredContentError.invalidJSON("Cannot serialize non-finite number: \(value)")
+            }
             // Use Int if the value is a whole number for cleaner output
-            if value.isFinite && value == value.rounded() && value >= Double(Int.min) && value <= Double(Int.max) {
+            if value == value.rounded() && value >= Double(Int.min) && value <= Double(Int.max) {
                 return String(Int(value))
             }
             return String(value)
         case .string(let value):
-            // Escape and quote the string for JSON
-            let escaped = value
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "\n", with: "\\n")
-                .replacingOccurrences(of: "\r", with: "\\r")
-                .replacingOccurrences(of: "\t", with: "\\t")
-            return "\"\(escaped)\""
+            // Use JSONEncoder for proper JSON string escaping to avoid security issues
+            // This handles all control characters, unicode sequences, and edge cases correctly
+            let wrapper = [value]
+            let data = try JSONSerialization.data(withJSONObject: wrapper, options: [])
+            guard let jsonString = String(data: data, encoding: .utf8) else {
+                throw StructuredContentError.invalidJSON("Unable to convert string to UTF-8")
+            }
+            // Extract the escaped string from the array: ["escaped"] -> "escaped"
+            // Remove the leading [ and trailing ] brackets
+            let trimmed = jsonString.dropFirst().dropLast()
+            return String(trimmed)
         case .array, .object:
             // For arrays and objects, use JSONSerialization
             let jsonObject = toJSONObject()
@@ -465,12 +472,19 @@ public struct StructuredContent: Sendable, Equatable, Hashable {
     /// - Returns: UTF-8 encoded JSON data.
     /// - Throws: An error if serialization fails.
     public func toData() throws -> Data {
-        // For primitive types, convert to string first
-        let jsonString = try toJSON()
-        guard let data = jsonString.data(using: .utf8) else {
-            throw StructuredContentError.invalidJSON("Unable to convert string to UTF-8 data")
+        // Optimize for arrays and objects to avoid double conversion
+        switch kind {
+        case .array, .object:
+            let jsonObject = toJSONObject()
+            return try JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys])
+        case .null, .bool, .number, .string:
+            // For primitive types, convert via toJSON()
+            let jsonString = try toJSON()
+            guard let data = jsonString.data(using: .utf8) else {
+                throw StructuredContentError.invalidJSON("Unable to convert string to UTF-8 data")
+            }
+            return data
         }
-        return data
     }
 
     // MARK: - Private Helpers
@@ -516,6 +530,8 @@ public struct StructuredContent: Sendable, Equatable, Hashable {
     }
 
     /// Converts to a JSONSerialization-compatible object.
+    /// - Note: This method assumes values have already been validated (e.g., no NaN/Infinity in numbers).
+    ///   Validation should occur in toJSON() or toData() before calling this method.
     private func toJSONObject() -> Any {
         switch kind {
         case .null:

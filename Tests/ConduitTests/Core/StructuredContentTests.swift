@@ -630,6 +630,256 @@ struct StructuredContentTests {
 
             #expect(json.contains("3.14"))
         }
+
+        // MARK: - Primitive Serialization Tests
+
+        @Test("Serialize null primitive")
+        func serializeNullPrimitive() throws {
+            let content = StructuredContent.null
+            let json = try content.toJSON()
+            #expect(json == "null")
+        }
+
+        @Test("Serialize bool true primitive")
+        func serializeBoolTruePrimitive() throws {
+            let content = StructuredContent.bool(true)
+            let json = try content.toJSON()
+            #expect(json == "true")
+        }
+
+        @Test("Serialize bool false primitive")
+        func serializeBoolFalsePrimitive() throws {
+            let content = StructuredContent.bool(false)
+            let json = try content.toJSON()
+            #expect(json == "false")
+        }
+
+        @Test("Serialize number primitive")
+        func serializeNumberPrimitive() throws {
+            let content = StructuredContent.number(42)
+            let json = try content.toJSON()
+            #expect(json == "42")
+        }
+
+        @Test("Serialize negative number primitive")
+        func serializeNegativeNumberPrimitive() throws {
+            let content = StructuredContent.number(-100.5)
+            let json = try content.toJSON()
+            #expect(json == "-100.5")
+        }
+
+        @Test("Serialize zero")
+        func serializeZero() throws {
+            let content = StructuredContent.number(0)
+            let json = try content.toJSON()
+            #expect(json == "0")
+        }
+
+        @Test("Serialize string primitive")
+        func serializeStringPrimitive() throws {
+            let content = StructuredContent.string("hello")
+            let json = try content.toJSON()
+            #expect(json == "\"hello\"")
+        }
+
+        @Test("Serialize empty string")
+        func serializeEmptyString() throws {
+            let content = StructuredContent.string("")
+            let json = try content.toJSON()
+            #expect(json == "\"\"")
+        }
+
+        @Test("NaN throws error on serialization")
+        func nanThrowsError() {
+            let content = StructuredContent.number(.nan)
+            #expect(throws: StructuredContentError.self) {
+                _ = try content.toJSON()
+            }
+        }
+
+        @Test("Positive infinity throws error on serialization")
+        func positiveInfinityThrowsError() {
+            let content = StructuredContent.number(.infinity)
+            #expect(throws: StructuredContentError.self) {
+                _ = try content.toJSON()
+            }
+        }
+
+        @Test("Negative infinity throws error on serialization")
+        func negativeInfinityThrowsError() {
+            let content = StructuredContent.number(-.infinity)
+            #expect(throws: StructuredContentError.self) {
+                _ = try content.toJSON()
+            }
+        }
+
+        // MARK: - String Escaping Tests
+
+        @Test("Serialize string with backslash")
+        func serializeStringWithBackslash() throws {
+            let content = StructuredContent.string("path\\to\\file")
+            let json = try content.toJSON()
+            #expect(json == "\"path\\\\to\\\\file\"")
+        }
+
+        @Test("Serialize string with quotes")
+        func serializeStringWithQuotes() throws {
+            let content = StructuredContent.string("He said \"hello\"")
+            let json = try content.toJSON()
+            #expect(json == "\"He said \\\"hello\\\"\"")
+        }
+
+        @Test("Serialize string with newline")
+        func serializeStringWithNewline() throws {
+            let content = StructuredContent.string("line1\nline2")
+            let json = try content.toJSON()
+            #expect(json == "\"line1\\nline2\"")
+        }
+
+        @Test("Serialize string with carriage return")
+        func serializeStringWithCarriageReturn() throws {
+            let content = StructuredContent.string("before\rafter")
+            let json = try content.toJSON()
+            #expect(json == "\"before\\rafter\"")
+        }
+
+        @Test("Serialize string with tab")
+        func serializeStringWithTab() throws {
+            let content = StructuredContent.string("col1\tcol2")
+            let json = try content.toJSON()
+            #expect(json == "\"col1\\tcol2\"")
+        }
+
+        @Test("Serialize string with control characters")
+        func serializeStringWithControlCharacters() throws {
+            // Test various control characters (U+0000 to U+001F)
+            let content = StructuredContent.string("test\u{0008}backspace")
+            let json = try content.toJSON()
+            // JSONSerialization should escape control characters
+            #expect(json.contains("\\"))
+        }
+
+        @Test("Serialize string with unicode characters")
+        func serializeStringWithUnicode() throws {
+            let content = StructuredContent.string("Hello 🌍 World")
+            let json = try content.toJSON()
+            // Should handle unicode properly
+            #expect(json.contains("Hello"))
+            #expect(json.contains("World"))
+        }
+
+        @Test("Serialize string with line separator")
+        func serializeStringWithLineSeparator() throws {
+            let content = StructuredContent.string("line\u{2028}separator")
+            let json = try content.toJSON()
+            // JSONSerialization should escape U+2028
+            #expect(json.contains("line"))
+            #expect(json.contains("separator"))
+        }
+
+        @Test("Serialize string with paragraph separator")
+        func serializeStringWithParagraphSeparator() throws {
+            let content = StructuredContent.string("para\u{2029}separator")
+            let json = try content.toJSON()
+            // JSONSerialization should escape U+2029
+            #expect(json.contains("para"))
+            #expect(json.contains("separator"))
+        }
+
+        @Test("Serialize complex string with multiple special characters")
+        func serializeComplexString() throws {
+            let content = StructuredContent.string("Line 1\nLine 2\t\"quoted\"\r\nBackslash: \\")
+            let json = try content.toJSON()
+            // Verify it's valid JSON by parsing it back
+            let reparsed = try StructuredContent(json: json)
+            #expect(try reparsed.string == "Line 1\nLine 2\t\"quoted\"\r\nBackslash: \\")
+        }
+
+        // MARK: - Round-trip Serialization Tests
+
+        @Test("Primitive null round-trip via toJSON")
+        func primitiveNullRoundTrip() throws {
+            let original = StructuredContent.null
+            let json = try original.toJSON()
+            let parsed = try StructuredContent(json: json)
+            #expect(parsed.isNull == true)
+        }
+
+        @Test("Primitive bool round-trip via toJSON")
+        func primitiveBoolRoundTrip() throws {
+            let original = StructuredContent.bool(true)
+            let json = try original.toJSON()
+            let parsed = try StructuredContent(json: json)
+            #expect(try parsed.bool == true)
+        }
+
+        @Test("Primitive number round-trip via toJSON")
+        func primitiveNumberRoundTrip() throws {
+            let original = StructuredContent.number(42.5)
+            let json = try original.toJSON()
+            let parsed = try StructuredContent(json: json)
+            #expect(try parsed.double == 42.5)
+        }
+
+        @Test("Primitive string round-trip via toJSON")
+        func primitiveStringRoundTrip() throws {
+            let original = StructuredContent.string("test\nwith\tspecial\"chars\\")
+            let json = try original.toJSON()
+            let parsed = try StructuredContent(json: json)
+            #expect(try parsed.string == "test\nwith\tspecial\"chars\\")
+        }
+
+        // MARK: - toData() Optimization Tests
+
+        @Test("toData for array avoids double conversion")
+        func toDataArrayOptimization() throws {
+            let content = StructuredContent.array([.number(1), .number(2), .number(3)])
+            let data = try content.toData()
+            // Should be able to parse it back
+            let parsed = try StructuredContent(data: data)
+            #expect(try parsed.array.count == 3)
+        }
+
+        @Test("toData for object avoids double conversion")
+        func toDataObjectOptimization() throws {
+            let content = StructuredContent.object(["key": .string("value")])
+            let data = try content.toData()
+            // Should be able to parse it back
+            let parsed = try StructuredContent(data: data)
+            #expect(try parsed.object["key"]?.string == "value")
+        }
+
+        @Test("toData for primitive null")
+        func toDataPrimitiveNull() throws {
+            let content = StructuredContent.null
+            let data = try content.toData()
+            let parsed = try StructuredContent(data: data)
+            #expect(parsed.isNull == true)
+        }
+
+        @Test("toData for primitive string")
+        func toDataPrimitiveString() throws {
+            let content = StructuredContent.string("hello")
+            let data = try content.toData()
+            let parsed = try StructuredContent(data: data)
+            #expect(try parsed.string == "hello")
+        }
+
+        @Test("toData rejects NaN")
+        func toDataRejectsNaN() {
+            let content = StructuredContent.number(.nan)
+            #expect(throws: StructuredContentError.self) {
+                _ = try content.toData()
+            }
+        }
+
+        @Test("toData rejects infinity")
+        func toDataRejectsInfinity() {
+            let content = StructuredContent.number(.infinity)
+            #expect(throws: StructuredContentError.self) {
+                _ = try content.toData()
+            }
+        }
     }
 
     // MARK: - Equality and Hashing Tests
