@@ -1,4 +1,4 @@
-# Conduit
+# Conduit 🦑
 
 **Unified Swift SDK for LLM inference across local and cloud providers**
 
