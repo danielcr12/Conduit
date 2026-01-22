@@ -1,4 +1,5 @@
-# Conduit 🦑
+
+![unnamed-14](https://github.com/user-attachments/assets/30ca8b25-ac66-48d9-b462-afd135050304)
 
 **Unified Swift SDK for LLM inference across local and cloud providers**
 
