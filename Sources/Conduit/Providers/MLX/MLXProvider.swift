@@ -81,6 +81,9 @@ public actor MLXProvider: AIProvider, TextGenerator, TokenCounter {
     /// Flag for cancellation support.
     private var isCancelled: Bool = false
 
+    /// Tracks whether runtime configuration has been applied.
+    private var didApplyRuntimeConfiguration: Bool = false
+
     // MARK: - Initialization
 
     /// Creates an MLX provider with the specified configuration.
@@ -510,6 +513,8 @@ public actor MLXProvider: AIProvider, TextGenerator, TokenCounter {
         for model: ModelID
     ) async throws -> TokenCount {
         #if arch(arm64)
+        await applyRuntimeConfigurationIfNeeded()
+
         // Validate model type
         guard case .mlx(let modelId) = model else {
             throw AIError.invalidInput("MLXProvider only supports .mlx() models")
@@ -541,6 +546,8 @@ public actor MLXProvider: AIProvider, TextGenerator, TokenCounter {
         for model: ModelID
     ) async throws -> TokenCount {
         #if arch(arm64)
+        await applyRuntimeConfigurationIfNeeded()
+
         // Validate model type
         guard case .mlx(let modelId) = model else {
             throw AIError.invalidInput("MLXProvider only supports .mlx() models")
@@ -642,6 +649,8 @@ extension MLXProvider {
             throw AIError.invalidInput("MLXProvider only supports .mlx() models")
         }
 
+        await applyRuntimeConfigurationIfNeeded()
+
         // Load model container
         let container = try await modelLoader.loadModel(identifier: model)
 
@@ -710,6 +719,8 @@ extension MLXProvider {
 
             // Reset cancellation flag
             isCancelled = false
+
+            await applyRuntimeConfigurationIfNeeded()
 
             // Load model container
             let container = try await modelLoader.loadModel(identifier: model)
@@ -810,21 +821,25 @@ extension MLXProvider {
 
     /// Converts Conduit GenerateConfig to mlx-swift-lm GenerateParameters.
     private func createGenerateParameters(from config: GenerateConfig) -> GenerateParameters {
-        var params = GenerateParameters()
+        MLXGenerateParametersBuilder().make(
+            mlxConfiguration: configuration,
+            generateConfig: config
+        )
+    }
 
-        // Token limits
-        if let maxTokens = config.maxTokens {
-            params.maxTokens = maxTokens
+    // MARK: - Runtime Configuration
+
+    private func applyRuntimeConfigurationIfNeeded() async {
+        guard !didApplyRuntimeConfiguration else { return }
+        await MLXModelCache.shared.apply(configuration: configuration.cacheConfiguration())
+
+        if let limit = configuration.memoryLimit {
+            #if arch(arm64)
+            MLX.GPU.set(memoryLimit: Int(limit.bytes))
+            #endif
         }
 
-        // Sampling parameters
-        params.temperature = config.temperature
-        params.topP = config.topP
-
-        // Repetition penalty
-        params.repetitionPenalty = config.repetitionPenalty
-
-        return params
+        didApplyRuntimeConfiguration = true
     }
 }
 

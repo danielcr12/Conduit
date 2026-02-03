@@ -176,7 +176,10 @@ public actor MLXModelCache {
     /// Initialize a new cache with the given configuration.
     ///
     /// - Parameter configuration: Cache size and eviction settings
-    private init(configuration: Configuration = .default) {
+    ///
+    /// - Important: This is `internal` to allow unit tests to create isolated
+    /// caches without mutating the process-global `shared` singleton.
+    internal init(configuration: Configuration = .default) {
         self.delegate = CacheDelegate()
         cacheWrapper.cache.delegate = delegate
         cacheWrapper.cache.countLimit = configuration.maxCachedModels
@@ -293,6 +296,36 @@ public actor MLXModelCache {
     /// - Returns: The active model ID, or nil if no model is active
     public func getCurrentModelId() -> String? {
         currentModelId
+    }
+
+    // MARK: - Test Hooks
+
+    /// Apply a cache configuration.
+    internal func apply(configuration: Configuration) {
+        let currentCountLimit = cache.countLimit
+        let newCountLimit = max(1, configuration.maxCachedModels)
+
+        if currentCountLimit == 0 {
+            cache.countLimit = newCountLimit
+        } else {
+            cache.countLimit = min(currentCountLimit, newCountLimit)
+        }
+
+        if let maxSize = configuration.maxCacheSize, maxSize.bytes > 0 {
+            let newCostLimit = Int(maxSize.bytes)
+            let currentCostLimit = cache.totalCostLimit
+
+            if currentCostLimit == 0 {
+                cache.totalCostLimit = newCostLimit
+            } else {
+                cache.totalCostLimit = min(currentCostLimit, newCostLimit)
+            }
+        }
+    }
+
+    /// Returns the current underlying NSCache limits for unit tests.
+    internal func _testing_limits() -> (countLimit: Int, totalCostLimit: Int) {
+        (cache.countLimit, cache.totalCostLimit)
     }
 }
 
