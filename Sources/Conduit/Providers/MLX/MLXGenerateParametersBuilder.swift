@@ -5,6 +5,7 @@
 // NOTE: MLX requires Metal GPU and Apple Silicon. Not available on Linux.
 #if canImport(MLX)
 
+#if CONDUIT_TRAIT_MLX
 import Foundation
 @preconcurrency import MLXLMCommon
 
@@ -49,3 +50,5 @@ internal struct MLXGenerateParametersBuilder: Sendable {
 }
 
 #endif // canImport(MLX)
+
+#endif // CONDUIT_TRAIT_MLX

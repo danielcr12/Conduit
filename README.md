@@ -95,11 +95,25 @@ dependencies: [
 ]
 ```
 
+Conduit keeps the core lean by making provider implementations opt-in via SwiftPM traits.
+
 For MLX-enabled builds on Apple Silicon, opt into the `MLX` trait:
 
 ```swift
 dependencies: [
     .package(url: "https://github.com/christopherkarani/Conduit", from: "2.0.0", traits: ["MLX"])
+]
+```
+
+For cloud providers, opt into the corresponding traits:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/christopherkarani/Conduit",
+        from: "2.0.0",
+        traits: ["Anthropic", "OpenAI", "OpenRouter"]
+    )
 ]
 ```
 

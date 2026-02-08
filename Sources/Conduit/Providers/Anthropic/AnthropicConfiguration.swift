@@ -3,6 +3,7 @@
 //
 // Main configuration for Anthropic Claude API.
 
+#if CONDUIT_TRAIT_ANTHROPIC
 import Foundation
 
 // MARK: - AnthropicConfiguration
@@ -460,3 +461,5 @@ public struct ThinkingConfiguration: Sendable, Hashable, Codable {
         self.budgetTokens = max(0, budgetTokens)
     }
 }
+
+#endif // CONDUIT_TRAIT_ANTHROPIC

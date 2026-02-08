@@ -5,6 +5,7 @@
 //  Created on 2025-12-17.
 //
 
+#if CONDUIT_TRAIT_MLX
 import Foundation
 
 // MARK: - Linux Compatibility
@@ -330,3 +331,5 @@ public actor MLXModelCache {
 }
 
 #endif // canImport(MLX)
+
+#endif // CONDUIT_TRAIT_MLX
