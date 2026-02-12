@@ -19,6 +19,8 @@ internal enum MLXRuntimeMemoryLimit {
         systemDefault: Int = systemDefaultMemoryLimit
     ) -> Int {
         guard let memoryLimit else { return systemDefault }
+        // ByteCount.bytes is UInt64, which could theoretically exceed Int.max on 32-bit systems.
+        // Clamping ensures we never overflow, though in practice this is unlikely on arm64.
         return Int(clamping: memoryLimit.bytes)
     }
 
