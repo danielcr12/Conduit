@@ -299,13 +299,11 @@ public actor DiffusionModelDownloader {
     /// - Parameter requiredBytes: The number of bytes required.
     /// - Throws: `AIError.insufficientDiskSpace` if not enough space is available.
     private nonisolated func checkAvailableDiskSpace(requiredBytes: Int64) throws {
-        let fileManager = FileManager.default
-
-        // Use the home directory to check available space
-        let homeURL = fileManager.homeDirectoryForCurrentUser
+        // Use the cache volume URL (cross-platform; available on iOS/macOS).
+        let volumeURL = ModelCache.defaultCacheDirectory
 
         do {
-            let resourceValues = try homeURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            let resourceValues = try volumeURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
 
             guard let availableBytes = resourceValues.volumeAvailableCapacityForImportantUsage else {
                 // If we can't determine available space, proceed with download
