@@ -52,7 +52,7 @@ let package = Package(
             name: "Llama",
             description: "Enable llama.cpp local inference via llama.swift"
         ),
-        .default(enabledTraits: []),
+        .default(enabledTraits: ["OpenAI", "CoreML", "MLX"]),
     ],
     dependencies: [
         // MARK: Cross-Platform Dependencies
